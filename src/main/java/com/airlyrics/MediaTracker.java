@@ -42,13 +42,16 @@ public class MediaTracker {
     private static volatile String lastActivePlayer = "";
     private static volatile boolean running = false;
 
-    private static final long POLL_INTERVAL_MS = 800L;
+    private static final long POLL_INTERVAL_MS = 200L;
     private static final long FILETIME_UNIX_EPOCH_MS = 11644473600000L;
 
     private static ScheduledExecutorService executor;
     private static volatile WinRtMedia winRtMedia;
     private static int winRtFailureCount = 0;
     private static boolean winRtDisabled = false;
+    private static volatile long lastSeenRawPosTicks = -1L;
+    private static volatile long lastSeenFiletime = -1L;
+    private static volatile long syntheticAnchorMs = 0L;
 
     public static synchronized void start() {
         if (running) {
@@ -143,6 +146,9 @@ public class MediaTracker {
             currentPositionMs = 0L;
             currentDurationMs = 0L;
             lastPollTimeMs = now;
+            lastSeenRawPosTicks = -1L;
+            lastSeenFiletime = -1L;
+            syntheticAnchorMs = 0L;
             if (!lastTrackKey.isEmpty()) {
                 lastTrackKey = "";
                 LyricsFetcher.clearLyrics();
@@ -159,7 +165,7 @@ public class MediaTracker {
         currentPositionMs = Math.max(0L, snap.positionMs);
         currentDurationMs = Math.max(0L, snap.durationMs);
         isPlaying = snap.playing;
-        lastPollTimeMs = now;
+        lastPollTimeMs = snap.sampleTimeMs > 0L ? snap.sampleTimeMs : now;
 
         if (snap.playing && !snap.player.isEmpty()) {
             lastActivePlayer = snap.player;
@@ -168,6 +174,9 @@ public class MediaTracker {
         String newKey = snap.artist + "\u0000" + snap.title;
         if (!newKey.equals(lastTrackKey)) {
             lastTrackKey = newKey;
+            lastSeenRawPosTicks = -1L;
+            lastSeenFiletime = -1L;
+            syntheticAnchorMs = now;
             LyricsFetcher.onTrackChanged(snap.title, snap.artist, snap.durationMs);
         }
     }
@@ -354,21 +363,36 @@ public class MediaTracker {
 
             long posMs = 0L;
             long durationMs = 0L;
+            long sampleNowMs = System.currentTimeMillis();
             try (Com timeline = session.child(8)) {
                 if (timeline != null) {
                     long startTicks = timeline.getLong(6);
                     long endTicks = timeline.getLong(7);
                     long posTicks = timeline.getLong(10);
                     long lastUpdatedFiletime = timeline.getLong(11);
+                    sampleNowMs = System.currentTimeMillis();
 
                     durationMs = Math.max(0L, (endTicks - startTicks) / 10000L);
                     posMs = Math.max(0L, (posTicks - startTicks) / 10000L);
 
-                    if (playing && lastUpdatedFiletime > 0L) {
-                        long updatedUnixMs = lastUpdatedFiletime / 10000L - FILETIME_UNIX_EPOCH_MS;
-                        long ageMs = nowMs - updatedUnixMs;
-                        if (ageMs >= 1L && ageMs < 86400000L) {
-                            posMs += ageMs;
+                    if (posTicks != lastSeenRawPosTicks || lastUpdatedFiletime != lastSeenFiletime) {
+                        lastSeenRawPosTicks = posTicks;
+                        lastSeenFiletime = lastUpdatedFiletime;
+                        syntheticAnchorMs = sampleNowMs;
+                    }
+
+                    if (playing) {
+                        long updatedUnixMs = lastUpdatedFiletime > 0L
+                                ? (lastUpdatedFiletime / 10000L - FILETIME_UNIX_EPOCH_MS)
+                                : 0L;
+                        long ageMs = sampleNowMs - updatedUnixMs;
+                        if (updatedUnixMs > 1577836800000L && ageMs >= -250L && ageMs < 600000L) {
+                            posMs += Math.max(0L, ageMs);
+                        } else if (syntheticAnchorMs > 0L) {
+                            long localElapsed = sampleNowMs - syntheticAnchorMs;
+                            if (localElapsed > 0L && localElapsed < 15000L) {
+                                posMs += localElapsed;
+                            }
                         }
                     }
                     if (durationMs > 0L && posMs > durationMs) {
@@ -378,7 +402,7 @@ public class MediaTracker {
             } catch (Throwable ignored) {
             }
 
-            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM");
+            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM", sampleNowMs);
         }
 
         @Override
@@ -766,7 +790,7 @@ public class MediaTracker {
     }
 
     private static final class MediaSnapshot {
-        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None");
+        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None", 0L);
 
         final String title;
         final String artist;
@@ -776,9 +800,15 @@ public class MediaTracker {
         final boolean playing;
         final String player;
         final String backend;
+        final long sampleTimeMs;
 
         MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
                       boolean playing, String player, String backend) {
+            this(title, artist, album, positionMs, durationMs, playing, player, backend, System.currentTimeMillis());
+        }
+
+        MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
+                      boolean playing, String player, String backend, long sampleTimeMs) {
             this.title = title;
             this.artist = artist;
             this.album = album;
@@ -787,6 +817,7 @@ public class MediaTracker {
             this.playing = playing;
             this.player = player;
             this.backend = backend;
+            this.sampleTimeMs = sampleTimeMs;
         }
     }
 }

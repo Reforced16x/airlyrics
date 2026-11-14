@@ -5,7 +5,9 @@
   "compatibilityLevel": "JAVA_8",
   "client": [
     "MinecraftClientMixin",
-    "InGameHudMixin"
+    "InGameHudMixin",
+    "WorldLightMixin",
+    "WorldRegionLightMixin"
   ],
   "injectors": {
     "defaultRequire": 1

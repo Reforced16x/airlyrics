@@ -9,31 +9,36 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Integrates AirLyrics' on-screen HUD overlay with OneConfig's visual HUD Editor
- * so users can drag, scale, and toggle HUD lyrics seamlessly.
+ * Exposes AirLyrics' on-screen HUD card to OneConfig v1's visual HUD editor
+ * so it can be dragged, scaled, toggled, and configured live.
  */
-public class AirLyricsHudWrapper implements OneConfigHudWrapper {
-    private final AirLyricsOneConfig config;
+public final class AirLyricsHudWrapper implements OneConfigHudWrapper {
+    private static final String[] LINKED_KEYS = {
+        "enabled", "onScreen", "appleStyle", "fontIndex", "scalePercent", "opacityPercent",
+        "glowEnabled", "glowIntensityPercent", "gradientEnabled", "movingGradient",
+        "gradientColorStart", "gradientColorEnd", "gradientSpeedPercent",
+        "rainbowPastel", "primaryColor", "uppercase"
+    };
 
+    private final AirLyricsOneConfig config;
     private String id = "airlyrics_hud";
     private String name = "AirLyrics HUD";
 
-    private float unscaledWidth = 220.0f;
-    private float unscaledHeight = 28.0f;
     private float defaultX = 16.0f;
-    private float defaultY = 180.0f;
-    private boolean initializedBounds = false;
+    private float defaultY = 260.0f;
+    private float unscaledW = 248.0f;
+    private float unscaledH = 64.0f;
 
     public AirLyricsHudWrapper(AirLyricsOneConfig config) {
         this.config = config;
+        this.config.attachHud(this);
     }
 
-    public void updateBounds(float defaultX, float defaultY, float unscaledW, float unscaledH) {
-        this.defaultX = defaultX;
-        this.defaultY = defaultY;
-        this.unscaledWidth = Math.max(80.0f, unscaledW);
-        this.unscaledHeight = Math.max(20.0f, unscaledH);
-        this.initializedBounds = true;
+    public void updateCoreBounds(float defX, float defY, float rawW, float rawH) {
+        this.defaultX = defX;
+        this.defaultY = defY;
+        this.unscaledW = Math.max(40.0f, rawW);
+        this.unscaledH = Math.max(16.0f, rawH);
     }
 
     @Override
@@ -58,7 +63,7 @@ public class AirLyricsHudWrapper implements OneConfigHudWrapper {
 
     @Override
     public String getModId() {
-        return AirLyricsOneConfig.MOD_ID;
+        return "airlyrics";
     }
 
     @Override
@@ -88,32 +93,32 @@ public class AirLyricsHudWrapper implements OneConfigHudWrapper {
 
     @Override
     public void setScale(float scale) {
-        float clamped = Math.max(0.5f, Math.min(2.5f, scale));
-        LyricsConfig.scalePercent = clamped * 100.0f;
-        config.syncFromCore();
+        float clamped = Math.max(50.0f, Math.min(250.0f, Math.round(scale * 20.0f) * 5.0f));
+        LyricsConfig.scalePercent = clamped;
+        config.scalePercent = clamped;
     }
 
     @Override
     public float getScaledWidth() {
-        return unscaledWidth * getScale();
+        return unscaledW * getScale();
     }
 
     @Override
     public void setScaledWidth(float width) {
-        if (unscaledWidth > 1.0f && width > 1.0f) {
-            setScale(width / unscaledWidth);
+        if (unscaledW > 1.0f) {
+            setScale(width / unscaledW);
         }
     }
 
     @Override
     public float getScaledHeight() {
-        return unscaledHeight * getScale();
+        return unscaledH * getScale();
     }
 
     @Override
     public void setScaledHeight(float height) {
-        if (unscaledHeight > 1.0f && height > 1.0f) {
-            setScale(height / unscaledHeight);
+        if (unscaledH > 1.0f) {
+            setScale(height / unscaledH);
         }
     }
 
@@ -125,16 +130,9 @@ public class AirLyricsHudWrapper implements OneConfigHudWrapper {
     @Override
     public void setHidden(boolean hidden) {
         LyricsConfig.onScreen = !hidden;
-        if (!hidden && !LyricsConfig.enabled) {
-            LyricsConfig.enabled = true;
-        }
-        config.syncFromCore();
-        LyricsConfig.saveQuiet();
-    }
-
-    public void syncHiddenFromCore() {
-        // Trigger HUD persistence when toggled from Config page.
-        LyricsConfig.saveQuiet();
+        config.onScreen = !hidden;
+        LyricsConfig.save();
+        config.save();
     }
 
     @Override
@@ -144,12 +142,12 @@ public class AirLyricsHudWrapper implements OneConfigHudWrapper {
 
     @Override
     public boolean getPlacementReady() {
-        return initializedBounds || LyricsConfig.hudX >= 0.0f;
+        return true;
     }
 
     @Override
     public boolean getOwnsPlacement() {
-        return true;
+        return false;
     }
 
     @Override
@@ -158,36 +156,25 @@ public class AirLyricsHudWrapper implements OneConfigHudWrapper {
     }
 
     @Override
-    public List<Property<?>> linkedProperties() {
-        List<Property<?>> list = new ArrayList<>();
-        if (config.getTree() != null) {
-            addIfPresent(list, "onScreen");
-            addIfPresent(list, "scalePercent");
-            addIfPresent(list, "opacityPercent");
-            addIfPresent(list, "importantLyricsLarger");
-            addIfPresent(list, "glowEnabled");
-            addIfPresent(list, "glowIntensityPercent");
-            addIfPresent(list, "syncOffsetMs");
-        }
-        return list;
-    }
-
-    private void addIfPresent(List<Property<?>> list, String name) {
-        Property<?> p = config.getTree().getProp(name);
-        if (p != null) {
-            list.add(p);
-        }
+    public void onDragEnd() {
+        save();
     }
 
     @Override
-    public void onDragEnd() {
-        LyricsConfig.saveQuiet();
-        config.save();
+    public List<Property<?>> linkedProperties() {
+        List<Property<?>> props = new ArrayList<Property<?>>();
+        for (int i = 0; i < LINKED_KEYS.length; i++) {
+            Property<?> p = config.findProperty(LINKED_KEYS[i]);
+            if (p != null) {
+                props.add(p);
+            }
+        }
+        return props;
     }
 
     @Override
     public void save() {
-        LyricsConfig.saveQuiet();
+        LyricsConfig.save();
         config.save();
     }
 }

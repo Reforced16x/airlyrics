@@ -118,8 +118,18 @@ public final class ShaderCompat {
             GlStateManager.alphaFunc(GL11.GL_GREATER, 0.003F);
         } else {
             GlStateManager.enableBlend();
-            GlStateManager.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
+            GlStateManager.blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ZERO, GL11.GL_ONE);
             GlStateManager.alphaFunc(GL11.GL_GREATER, 0.003F);
+        }
+    }
+
+    public static int getBoundTexture2D() {
+        return GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+    }
+
+    public static void restoreBoundTexture2D(int texId) {
+        if (texId > 0) {
+            GlStateManager.bindTexture(texId);
         }
     }
 

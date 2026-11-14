@@ -3,165 +3,283 @@ package com.airlyrics;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 
-import java.util.Locale;
-
 /**
- * Fallback vanilla settings screen used when OneConfig is not installed.
+ * Clean paged fallback settings GUI (used when OneConfig v1 is not loaded).
+ * Exposes every AirLyrics setting cleanly across two tabs without overlapping.
  */
 public class LyricsGuiScreen extends Screen {
-    private static final int ID_ENABLED = 1;
-    private static final int ID_IN_WORLD = 2;
-    private static final int ID_ON_SCREEN = 3;
-    private static final int ID_SHOW_WORDS = 4;
-    private static final int ID_SCATTER = 5;
-    private static final int ID_UPPERCASE = 6;
-    private static final int ID_GLOW = 7;
-    private static final int ID_GLOW_INTENSITY = 8;
-    private static final int ID_IMPORTANT_LARGER = 9;
-    private static final int ID_WORD_ESTIMATOR = 10;
-    private static final int ID_OPACITY_DOWN = 11;
-    private static final int ID_OPACITY_UP = 12;
-    private static final int ID_SYNC_DOWN = 13;
-    private static final int ID_SYNC_UP = 14;
-    private static final int ID_SCALE_DOWN = 15;
-    private static final int ID_SCALE_UP = 16;
-    private static final int ID_REFETCH = 17;
-    private static final int ID_DONE = 99;
+    private static final int[][] GRADIENT_PRESETS = {
+        {0x66F3FF, 0xFF7BE5},
+        {0xFFD166, 0xFF5E7E},
+        {0x72FFB6, 0x8B7BFF},
+        {0x64B5FF, 0xFFFFFF},
+        {0xFF5470, 0xFFAE42},
+        {0xD29BFF, 0xFF77B4},
+        {0xA8FF78, 0x78FFD6},
+        {0x36D1DC, 0x5B86E5}
+    };
+    private static final String[] GRADIENT_NAMES = {
+        "Cyber Cyan-Pink",
+        "Sunset Gold-Rose",
+        "Aurora Mint-Violet",
+        "Ice Blue-White",
+        "Crimson-Amber",
+        "Lavender-Berry",
+        "Lime-Aqua",
+        "Ocean Wave"
+    };
+
+    private static final int[] COLOR_PRESETS = {
+        0x55FFFF, 0xFF77DD, 0x77FF99, 0xFFDD66, 0x99B4FF, 0xFFFFFF
+    };
+
+    private final Screen parent;
+    private int activeTab = 0;
+    private int colorPresetIdx = 0;
+    private int gradientPresetIdx = 0;
+
+    public LyricsGuiScreen() {
+        this(null);
+    }
+
+    public LyricsGuiScreen(Screen parent) {
+        this.parent = parent;
+        syncPresetIndices();
+    }
+
+    private void syncPresetIndices() {
+        for (int i = 0; i < COLOR_PRESETS.length; i++) {
+            if (COLOR_PRESETS[i] == (LyricsConfig.primaryColor & 0x00FFFFFF)) {
+                colorPresetIdx = i;
+                break;
+            }
+        }
+        int gs = LyricsConfig.gradientColorStart & 0x00FFFFFF;
+        int ge = LyricsConfig.gradientColorEnd & 0x00FFFFFF;
+        for (int i = 0; i < GRADIENT_PRESETS.length; i++) {
+            if (GRADIENT_PRESETS[i][0] == gs && GRADIENT_PRESETS[i][1] == ge) {
+                gradientPresetIdx = i;
+                break;
+            }
+        }
+    }
 
     @Override
     public void init() {
         this.buttons.clear();
-        int leftX = this.width / 2 - 155;
-        int rightX = this.width / 2 + 5;
-        int startY = Math.max(46, this.height / 2 - 96);
-        int rowH = 22;
+        int cx = this.width / 2;
+        int top = Math.max(28, (this.height - 216) / 2);
+        int leftCol = cx - 156;
+        int rightCol = cx + 4;
 
-        this.buttons.add(new ButtonWidget(ID_ENABLED, leftX, startY, 150, 20, labelEnabled()));
-        this.buttons.add(new ButtonWidget(ID_IN_WORLD, rightX, startY, 150, 20, labelInWorld()));
+        // Top tab switcher
+        this.buttons.add(new ButtonWidget(90, leftCol, top, 152, 18,
+                (activeTab == 0 ? "\u00A7b> " : "") + "Display, Sky & Sync"));
+        this.buttons.add(new ButtonWidget(91, rightCol, top, 152, 18,
+                (activeTab == 1 ? "\u00A7b> " : "") + "Font, Glow & Light"));
 
-        this.buttons.add(new ButtonWidget(ID_ON_SCREEN, leftX, startY + rowH, 150, 20, labelOnScreen()));
-        this.buttons.add(new ButtonWidget(ID_SHOW_WORDS, rightX, startY + rowH, 150, 20, labelShowWords()));
+        int rowY = top + 24;
+        int step = 22;
 
-        this.buttons.add(new ButtonWidget(ID_SCATTER, leftX, startY + rowH * 2, 150, 20, labelScatter()));
-        this.buttons.add(new ButtonWidget(ID_UPPERCASE, rightX, startY + rowH * 2, 150, 20, labelUppercase()));
+        if (activeTab == 0) {
+            this.buttons.add(new ButtonWidget(1, leftCol, rowY, 152, 20, "Mod: " + onOff(LyricsConfig.enabled)));
+            this.buttons.add(new ButtonWidget(2, rightCol, rowY, 152, 20, "In-World: " + onOff(LyricsConfig.inWorld)));
 
-        this.buttons.add(new ButtonWidget(ID_GLOW, leftX, startY + rowH * 3, 150, 20, labelGlow()));
-        this.buttons.add(new ButtonWidget(ID_GLOW_INTENSITY, rightX, startY + rowH * 3, 150, 20, labelGlowIntensity()));
+            this.buttons.add(new ButtonWidget(3, leftCol, rowY + step, 152, 20, "Sky Lyrics: " + onOff(LyricsConfig.skyLyrics)));
+            this.buttons.add(new ButtonWidget(4, rightCol, rowY + step, 152, 20, "On-Screen HUD: " + onOff(LyricsConfig.onScreen)));
 
-        this.buttons.add(new ButtonWidget(ID_IMPORTANT_LARGER, leftX, startY + rowH * 4, 150, 20, labelImportant()));
-        this.buttons.add(new ButtonWidget(ID_WORD_ESTIMATOR, rightX, startY + rowH * 4, 150, 20, labelEstimator()));
+            this.buttons.add(new ButtonWidget(5, leftCol, rowY + step * 2, 152, 20, "Apple Style: " + onOff(LyricsConfig.appleStyle)));
+            this.buttons.add(new ButtonWidget(6, rightCol, rowY + step * 2, 152, 20, "Word Popups: " + onOff(LyricsConfig.showWords)));
 
-        this.buttons.add(new ButtonWidget(ID_OPACITY_DOWN, leftX, startY + rowH * 5, 72, 20, "Opacity -10%"));
-        this.buttons.add(new ButtonWidget(ID_OPACITY_UP, leftX + 78, startY + rowH * 5, 72, 20, "Opacity +10%"));
-        this.buttons.add(new ButtonWidget(ID_SYNC_DOWN, rightX, startY + rowH * 5, 72, 20, "Sync -50ms"));
-        this.buttons.add(new ButtonWidget(ID_SYNC_UP, rightX + 78, startY + rowH * 5, 72, 20, "Sync +50ms"));
+            this.buttons.add(new ButtonWidget(7, leftCol, rowY + step * 3, 152, 20, "Scatter: " + onOff(LyricsConfig.scatterLayout)));
+            this.buttons.add(new ButtonWidget(8, rightCol, rowY + step * 3, 152, 20, "Uppercase: " + onOff(LyricsConfig.uppercase)));
 
-        this.buttons.add(new ButtonWidget(ID_SCALE_DOWN, leftX, startY + rowH * 6, 72, 20, "Scale -10%"));
-        this.buttons.add(new ButtonWidget(ID_SCALE_UP, leftX + 78, startY + rowH * 6, 72, 20, "Scale +10%"));
-        this.buttons.add(new ButtonWidget(ID_REFETCH, rightX, startY + rowH * 6, 150, 20, "Refetch Lyrics"));
+            this.buttons.add(new ButtonWidget(9, leftCol, rowY + step * 4, 152, 20,
+                    "Scale: " + Math.round(LyricsConfig.scalePercent) + "%"));
+            this.buttons.add(new ButtonWidget(10, rightCol, rowY + step * 4, 152, 20,
+                    "Opacity: " + Math.round(LyricsConfig.opacityPercent) + "%"));
 
-        this.buttons.add(new ButtonWidget(ID_DONE, this.width / 2 - 75, startY + rowH * 7 + 4, 150, 20, "Done"));
+            this.buttons.add(new ButtonWidget(11, leftCol, rowY + step * 5, 152, 20,
+                    "Sky Scale: " + Math.round(LyricsConfig.skyScalePercent) + "%"));
+            this.buttons.add(new ButtonWidget(12, rightCol, rowY + step * 5, 152, 20,
+                    "Sky Pitch: " + Math.round(LyricsConfig.skyElevationDeg) + "\u00B0"));
+
+            this.buttons.add(new ButtonWidget(13, leftCol, rowY + step * 6, 74, 20, "Sync -50ms"));
+            this.buttons.add(new ButtonWidget(14, leftCol + 78, rowY + step * 6, 74, 20, "Sync +50ms"));
+            this.buttons.add(new ButtonWidget(15, rightCol, rowY + step * 6, 152, 20, "Reset Defaults"));
+        } else {
+            this.buttons.add(new ButtonWidget(20, leftCol, rowY, 312, 20,
+                    "Font Style: " + LyricsConfig.getFontOptionName()));
+
+            this.buttons.add(new ButtonWidget(21, leftCol, rowY + step, 152, 20,
+                    "Glow: " + onOff(LyricsConfig.glowEnabled)));
+            this.buttons.add(new ButtonWidget(22, rightCol, rowY + step, 152, 20,
+                    "Glow Power: " + Math.round(LyricsConfig.glowIntensityPercent) + "%"));
+
+            this.buttons.add(new ButtonWidget(23, leftCol, rowY + step * 2, 152, 20,
+                    "Gradient: " + onOff(LyricsConfig.gradientEnabled)));
+            this.buttons.add(new ButtonWidget(24, rightCol, rowY + step * 2, 152, 20,
+                    "Moving Grad: " + onOff(LyricsConfig.movingGradient)));
+
+            this.buttons.add(new ButtonWidget(25, leftCol, rowY + step * 3, 152, 20,
+                    "Grad: " + GRADIENT_NAMES[gradientPresetIdx]));
+            this.buttons.add(new ButtonWidget(26, rightCol, rowY + step * 3, 152, 20,
+                    "Grad Speed: " + Math.round(LyricsConfig.gradientSpeedPercent) + "%"));
+
+            this.buttons.add(new ButtonWidget(27, leftCol, rowY + step * 4, 152, 20,
+                    "Emit Light: " + onOff(LyricsConfig.lyricsEmitLight)));
+            this.buttons.add(new ButtonWidget(28, rightCol, rowY + step * 4, 152, 20,
+                    "Light Level: " + LyricsConfig.emitLightLevel));
+
+            this.buttons.add(new ButtonWidget(29, leftCol, rowY + step * 5, 152, 20,
+                    "Pastel World: " + onOff(LyricsConfig.rainbowPastel)));
+            this.buttons.add(new ButtonWidget(30, rightCol, rowY + step * 5, 152, 20,
+                    String.format("Accent: #%06X", LyricsConfig.primaryColor)));
+
+            this.buttons.add(new ButtonWidget(31, leftCol, rowY + step * 6, 152, 20,
+                    "Word Est.: " + onOff(LyricsConfig.estimateWordTimings)));
+            this.buttons.add(new ButtonWidget(32, rightCol, rowY + step * 6, 152, 20,
+                    "Reset HUD Pos"));
+        }
+
+        this.buttons.add(new ButtonWidget(100, cx - 100, rowY + step * 7 + 4, 200, 20, "Done"));
     }
 
     @Override
     protected void buttonClicked(ButtonWidget button) {
         switch (button.id) {
-            case ID_ENABLED:
+            case 90:
+                activeTab = 0;
+                break;
+            case 91:
+                activeTab = 1;
+                break;
+            case 1:
                 LyricsConfig.enabled = !LyricsConfig.enabled;
-                button.message = labelEnabled();
                 break;
-            case ID_IN_WORLD:
+            case 2:
                 LyricsConfig.inWorld = !LyricsConfig.inWorld;
-                button.message = labelInWorld();
                 break;
-            case ID_ON_SCREEN:
+            case 3:
+                LyricsConfig.skyLyrics = !LyricsConfig.skyLyrics;
+                break;
+            case 4:
                 LyricsConfig.onScreen = !LyricsConfig.onScreen;
-                button.message = labelOnScreen();
                 break;
-            case ID_SHOW_WORDS:
+            case 5:
+                LyricsConfig.appleStyle = !LyricsConfig.appleStyle;
+                break;
+            case 6:
                 LyricsConfig.showWords = !LyricsConfig.showWords;
-                button.message = labelShowWords();
                 break;
-            case ID_SCATTER:
+            case 7:
                 LyricsConfig.scatterLayout = !LyricsConfig.scatterLayout;
-                button.message = labelScatter();
                 break;
-            case ID_UPPERCASE:
+            case 8:
                 LyricsConfig.uppercase = !LyricsConfig.uppercase;
-                button.message = labelUppercase();
                 break;
-            case ID_GLOW:
-                LyricsConfig.glowEnabled = !LyricsConfig.glowEnabled;
-                button.message = labelGlow();
+            case 9:
+                LyricsConfig.scalePercent += 25.0f;
+                if (LyricsConfig.scalePercent > 200.0f) LyricsConfig.scalePercent = 75.0f;
                 break;
-            case ID_GLOW_INTENSITY:
-                LyricsConfig.glowIntensityPercent += 25.0f;
-                if (LyricsConfig.glowIntensityPercent > 200.0f) {
-                    LyricsConfig.glowIntensityPercent = 25.0f;
-                }
-                button.message = labelGlowIntensity();
+            case 10:
+                LyricsConfig.opacityPercent += 15.0f;
+                if (LyricsConfig.opacityPercent > 100.0f) LyricsConfig.opacityPercent = 25.0f;
                 break;
-            case ID_IMPORTANT_LARGER:
-                LyricsConfig.importantLyricsLarger = !LyricsConfig.importantLyricsLarger;
-                button.message = labelImportant();
+            case 11:
+                LyricsConfig.skyScalePercent += 25.0f;
+                if (LyricsConfig.skyScalePercent > 245.0f) LyricsConfig.skyScalePercent = 95.0f;
                 break;
-            case ID_WORD_ESTIMATOR:
-                LyricsConfig.estimateWordTimings = !LyricsConfig.estimateWordTimings;
-                button.message = labelEstimator();
-                LyricsFetcher.refetchCurrentTrack();
+            case 12:
+                LyricsConfig.skyElevationDeg += 8.0f;
+                if (LyricsConfig.skyElevationDeg > 66.0f) LyricsConfig.skyElevationDeg = 22.0f;
                 break;
-            case ID_OPACITY_DOWN:
-                LyricsConfig.opacityPercent = Math.max(10.0f, LyricsConfig.opacityPercent - 10.0f);
-                break;
-            case ID_OPACITY_UP:
-                LyricsConfig.opacityPercent = Math.min(100.0f, LyricsConfig.opacityPercent + 10.0f);
-                break;
-            case ID_SYNC_DOWN:
+            case 13:
                 LyricsConfig.syncOffsetMs -= 50;
                 break;
-            case ID_SYNC_UP:
+            case 14:
                 LyricsConfig.syncOffsetMs += 50;
                 break;
-            case ID_SCALE_DOWN:
-                LyricsConfig.scalePercent = Math.max(50.0f, LyricsConfig.scalePercent - 10.0f);
+            case 15:
+                LyricsConfig.reset();
+                syncPresetIndices();
                 break;
-            case ID_SCALE_UP:
-                LyricsConfig.scalePercent = Math.min(250.0f, LyricsConfig.scalePercent + 10.0f);
+            case 20:
+                LyricsConfig.fontIndex = (LyricsConfig.fontIndex + 1) % LyricsConfig.FONT_OPTIONS.length;
                 break;
-            case ID_REFETCH:
-                LyricsFetcher.refetchCurrentTrack();
-                MediaTracker.pollAsyncNow();
-                return;
-            case ID_DONE:
+            case 21:
+                LyricsConfig.glowEnabled = !LyricsConfig.glowEnabled;
+                break;
+            case 22:
+                LyricsConfig.glowIntensityPercent += 25.0f;
+                if (LyricsConfig.glowIntensityPercent > 200.0f) LyricsConfig.glowIntensityPercent = 50.0f;
+                break;
+            case 23:
+                LyricsConfig.gradientEnabled = !LyricsConfig.gradientEnabled;
+                break;
+            case 24:
+                LyricsConfig.movingGradient = !LyricsConfig.movingGradient;
+                break;
+            case 25:
+                gradientPresetIdx = (gradientPresetIdx + 1) % GRADIENT_PRESETS.length;
+                LyricsConfig.gradientColorStart = GRADIENT_PRESETS[gradientPresetIdx][0];
+                LyricsConfig.gradientColorEnd = GRADIENT_PRESETS[gradientPresetIdx][1];
+                break;
+            case 26:
+                LyricsConfig.gradientSpeedPercent += 40.0f;
+                if (LyricsConfig.gradientSpeedPercent > 260.0f) LyricsConfig.gradientSpeedPercent = 60.0f;
+                break;
+            case 27:
+                LyricsConfig.lyricsEmitLight = !LyricsConfig.lyricsEmitLight;
+                if (!LyricsConfig.lyricsEmitLight) {
+                    DynamicLightManager.clear(this.minecraft);
+                }
+                break;
+            case 28:
+                LyricsConfig.emitLightLevel += 2;
+                if (LyricsConfig.emitLightLevel > 15) LyricsConfig.emitLightLevel = 6;
+                break;
+            case 29:
+                LyricsConfig.rainbowPastel = !LyricsConfig.rainbowPastel;
+                break;
+            case 30:
+                colorPresetIdx = (colorPresetIdx + 1) % COLOR_PRESETS.length;
+                LyricsConfig.primaryColor = COLOR_PRESETS[colorPresetIdx];
+                break;
+            case 31:
+                LyricsConfig.estimateWordTimings = !LyricsConfig.estimateWordTimings;
+                break;
+            case 32:
+                LyricsConfig.hudX = -1.0f;
+                LyricsConfig.hudY = -1.0f;
+                break;
+            case 100:
                 LyricsConfig.save();
-                this.minecraft.openScreen(null);
+                OneConfigCompat.syncFromCore();
+                this.minecraft.openScreen(parent);
                 return;
             default:
                 return;
         }
+
         LyricsConfig.save();
+        OneConfigCompat.syncFromCore();
+        init();
     }
 
     @Override
-    public void render(int mouseX, int mouseY, float partialTicks) {
+    public void render(int mouseX, int mouseY, float tickDelta) {
         this.renderBackground();
-        int topY = Math.max(10, this.height / 2 - 134);
-        this.drawCenteredString(this.textRenderer, "AirLyrics Settings", this.width / 2, topY, 0xFFFFFF);
-
-        String trackInfo = MediaTracker.hasMedia
-                ? (MediaTracker.currentArtist.isEmpty() ? MediaTracker.currentTitle : MediaTracker.currentArtist + " - " + MediaTracker.currentTitle)
-                : "No active media session";
-        this.drawCenteredString(this.textRenderer, "Track: " + trackInfo, this.width / 2, topY + 12, 0xA8F5DF);
-
-        String infoLine = String.format(Locale.ROOT, "Opacity: %.0f%% | Scale: %.0f%% | Offset: %+dms | %s (%s)",
-                LyricsConfig.opacityPercent,
-                LyricsConfig.scalePercent,
-                LyricsConfig.syncOffsetMs,
-                LyricsFetcher.statusMessage,
-                MediaTracker.currentBackend);
-        this.drawCenteredString(this.textRenderer, infoLine, this.width / 2, topY + 24, 0xCCCCCC);
-
-        super.render(mouseX, mouseY, partialTicks);
+        int top = Math.max(12, (this.height - 216) / 2 - 14);
+        drawCenteredString(this.textRenderer, "AirLyrics Settings", this.width / 2, top, 0x55FFFF);
+        String trackLine = MediaTracker.hasMedia
+                ? (MediaTracker.currentArtist + " - " + MediaTracker.currentTitle)
+                : "No active Windows media detected";
+        String offsetInfo = String.format("Sync Offset: %+dms  |  Font: %s",
+                LyricsConfig.syncOffsetMs, LyricsConfig.getFontOptionName());
+        drawCenteredString(this.textRenderer, trackLine, this.width / 2, top + 12, 0xCCCCCC);
+        super.render(mouseX, mouseY, tickDelta);
+        drawCenteredString(this.textRenderer, offsetInfo, this.width / 2, Math.min(this.height - 14, top + 218), 0xAAAAAA);
     }
 
     @Override
@@ -169,43 +287,7 @@ public class LyricsGuiScreen extends Screen {
         return false;
     }
 
-    private String labelEnabled() {
-        return "AirLyrics: " + (LyricsConfig.enabled ? "ON" : "OFF");
-    }
-
-    private String labelInWorld() {
-        return "3D World Lyrics: " + (LyricsConfig.inWorld ? "ON" : "OFF");
-    }
-
-    private String labelOnScreen() {
-        return "HUD Lyrics: " + (LyricsConfig.onScreen ? "ON" : "OFF");
-    }
-
-    private String labelShowWords() {
-        return "Word-by-Word: " + (LyricsConfig.showWords ? "ON" : "OFF");
-    }
-
-    private String labelScatter() {
-        return "Scatter 3D: " + (LyricsConfig.scatterLayout ? "ON" : "OFF");
-    }
-
-    private String labelUppercase() {
-        return "Uppercase: " + (LyricsConfig.uppercase ? "ON" : "OFF");
-    }
-
-    private String labelGlow() {
-        return "Shine/Glow: " + (LyricsConfig.glowEnabled ? "ON" : "OFF");
-    }
-
-    private String labelGlowIntensity() {
-        return String.format(Locale.ROOT, "Glow Power: %.0f%%", LyricsConfig.glowIntensityPercent);
-    }
-
-    private String labelImportant() {
-        return "Important Bigger: " + (LyricsConfig.importantLyricsLarger ? "ON" : "OFF");
-    }
-
-    private String labelEstimator() {
-        return "Beat Estimator: " + (LyricsConfig.estimateWordTimings ? "ON" : "OFF");
+    private static String onOff(boolean v) {
+        return v ? "\u00A7aON" : "\u00A7cOFF";
     }
 }

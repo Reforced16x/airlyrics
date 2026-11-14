@@ -8,18 +8,44 @@ import java.io.FileReader;
 import java.io.FileWriter;
 
 public class LyricsConfig {
+    public static final String[] FONT_OPTIONS = {
+        "Minecraft",
+        "Clean Sans",
+        "Sans Bold",
+        "Rounded UI",
+        "Editorial Serif",
+        "JetBrains / Mono"
+    };
+
     public static boolean enabled = true;
     public static boolean inWorld = true;
+    public static boolean skyLyrics = false;
     public static boolean onScreen = true;
+    public static boolean appleStyle = true;
+
     public static int syncOffsetMs = 0;
     public static boolean showWords = true;
     public static boolean scatterLayout = true;
     public static boolean uppercase = false;
+
+    public static int fontIndex = 0;
     public static float scalePercent = 100.0f;
+    public static float skyScalePercent = 145.0f;
+    public static float skyElevationDeg = 38.0f;
     public static float opacityPercent = 100.0f;
-    public static boolean importantLyricsLarger = true;
+
     public static boolean glowEnabled = true;
     public static float glowIntensityPercent = 100.0f;
+
+    public static boolean gradientEnabled = false;
+    public static boolean movingGradient = true;
+    public static int gradientColorStart = 0x66F3FF;
+    public static int gradientColorEnd = 0xFF7BE5;
+    public static float gradientSpeedPercent = 100.0f;
+
+    public static boolean lyricsEmitLight = false;
+    public static int emitLightLevel = 12;
+
     public static boolean estimateWordTimings = true;
     public static boolean rainbowPastel = true;
     public static int primaryColor = 0x55FFFF;
@@ -33,11 +59,24 @@ public class LyricsConfig {
         apply(new ConfigData());
     }
 
+    public static String getFontOptionName() {
+        int idx = Math.max(0, Math.min(FONT_OPTIONS.length - 1, fontIndex));
+        return FONT_OPTIONS[idx];
+    }
+
     public static void clampAll() {
         syncOffsetMs = Math.max(-2000, Math.min(2000, syncOffsetMs));
+        fontIndex = Math.max(0, Math.min(FONT_OPTIONS.length - 1, fontIndex));
         scalePercent = Math.max(50.0f, Math.min(250.0f, scalePercent));
+        skyScalePercent = Math.max(60.0f, Math.min(300.0f, skyScalePercent));
+        skyElevationDeg = Math.max(15.0f, Math.min(72.0f, skyElevationDeg));
         opacityPercent = Math.max(10.0f, Math.min(100.0f, opacityPercent));
         glowIntensityPercent = Math.max(25.0f, Math.min(200.0f, glowIntensityPercent));
+        gradientSpeedPercent = Math.max(20.0f, Math.min(300.0f, gradientSpeedPercent));
+        emitLightLevel = Math.max(4, Math.min(15, emitLightLevel));
+        gradientColorStart &= 0x00FFFFFF;
+        gradientColorEnd &= 0x00FFFFFF;
+        primaryColor &= 0x00FFFFFF;
     }
 
     public static float getOpacityAlpha() {
@@ -97,16 +136,27 @@ public class LyricsConfig {
         ConfigData d = new ConfigData();
         d.enabled = enabled;
         d.inWorld = inWorld;
+        d.skyLyrics = skyLyrics;
         d.onScreen = onScreen;
+        d.appleStyle = appleStyle;
         d.syncOffsetMs = syncOffsetMs;
         d.showWords = showWords;
         d.scatterLayout = scatterLayout;
         d.uppercase = uppercase;
+        d.fontIndex = fontIndex;
         d.scalePercent = scalePercent;
+        d.skyScalePercent = skyScalePercent;
+        d.skyElevationDeg = skyElevationDeg;
         d.opacityPercent = opacityPercent;
-        d.importantLyricsLarger = importantLyricsLarger;
         d.glowEnabled = glowEnabled;
         d.glowIntensityPercent = glowIntensityPercent;
+        d.gradientEnabled = gradientEnabled;
+        d.movingGradient = movingGradient;
+        d.gradientColorStart = gradientColorStart;
+        d.gradientColorEnd = gradientColorEnd;
+        d.gradientSpeedPercent = gradientSpeedPercent;
+        d.lyricsEmitLight = lyricsEmitLight;
+        d.emitLightLevel = emitLightLevel;
         d.estimateWordTimings = estimateWordTimings;
         d.rainbowPastel = rainbowPastel;
         d.primaryColor = primaryColor;
@@ -118,16 +168,27 @@ public class LyricsConfig {
     private static void apply(ConfigData d) {
         enabled = d.enabled;
         inWorld = d.inWorld;
+        skyLyrics = d.skyLyrics;
         onScreen = d.onScreen;
+        appleStyle = d.appleStyle;
         syncOffsetMs = d.syncOffsetMs;
         showWords = d.showWords;
         scatterLayout = d.scatterLayout;
         uppercase = d.uppercase;
+        fontIndex = d.fontIndex;
         scalePercent = d.scalePercent;
+        skyScalePercent = d.skyScalePercent;
+        skyElevationDeg = d.skyElevationDeg;
         opacityPercent = d.opacityPercent;
-        importantLyricsLarger = d.importantLyricsLarger;
         glowEnabled = d.glowEnabled;
         glowIntensityPercent = d.glowIntensityPercent;
+        gradientEnabled = d.gradientEnabled;
+        movingGradient = d.movingGradient;
+        gradientColorStart = d.gradientColorStart;
+        gradientColorEnd = d.gradientColorEnd;
+        gradientSpeedPercent = d.gradientSpeedPercent;
+        lyricsEmitLight = d.lyricsEmitLight;
+        emitLightLevel = d.emitLightLevel;
         estimateWordTimings = d.estimateWordTimings;
         rainbowPastel = d.rainbowPastel;
         primaryColor = d.primaryColor;
@@ -139,16 +200,27 @@ public class LyricsConfig {
     private static class ConfigData {
         boolean enabled = true;
         boolean inWorld = true;
+        boolean skyLyrics = false;
         boolean onScreen = true;
+        boolean appleStyle = true;
         int syncOffsetMs = 0;
         boolean showWords = true;
         boolean scatterLayout = true;
         boolean uppercase = false;
+        int fontIndex = 0;
         float scalePercent = 100.0f;
+        float skyScalePercent = 145.0f;
+        float skyElevationDeg = 38.0f;
         float opacityPercent = 100.0f;
-        boolean importantLyricsLarger = true;
         boolean glowEnabled = true;
         float glowIntensityPercent = 100.0f;
+        boolean gradientEnabled = false;
+        boolean movingGradient = true;
+        int gradientColorStart = 0x66F3FF;
+        int gradientColorEnd = 0xFF7BE5;
+        float gradientSpeedPercent = 100.0f;
+        boolean lyricsEmitLight = false;
+        int emitLightLevel = 12;
         boolean estimateWordTimings = true;
         boolean rainbowPastel = true;
         int primaryColor = 0x55FFFF;

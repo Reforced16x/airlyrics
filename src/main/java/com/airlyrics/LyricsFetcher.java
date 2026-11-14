@@ -32,18 +32,15 @@ import java.util.regex.Pattern;
 import java.util.zip.InflaterInputStream;
 
 /**
- * Multi-provider lyrics fetcher & timing analyzer inspired by EvergreenHUD.
- * Supports lrc.red (YAML word-sync), lrclib.net (duration-scored LRC / enhanced LRC),
- * KuGou (KRC decrypted word-sync), NetEase fallback, EvergreenHUD Beat syllable estimator,
- * and chorus/emphasis importance analysis.
+ * Multi-provider lyrics fetcher & timing analyzer matching EvergreenHUD's query splitting and ranking.
+ * Supports lrc.red (YAML word-sync), lrclib.net (duration/word-sync scored LRC / YAML),
+ * KuGou (KRC decrypted word-sync), NetEase fallback, and Beat syllable estimation.
  */
 public class LyricsFetcher {
     public static class LyricWord {
         public long timeMs;
         public long endTimeMs;
         public String text;
-        public boolean important;
-        public float boost = 1.0f;
         public volatile boolean spawned = false;
 
         public LyricWord(long timeMs, String text) {
@@ -66,8 +63,6 @@ public class LyricsFetcher {
         public final List<LyricWord> words;
         public boolean hasWordTimings;
         public boolean estimatedWords;
-        public boolean important;
-        public float importanceBoost = 1.0f;
 
         public LyricLine(long startTimeMs, long endTimeMs, String fullLine, List<LyricWord> words) {
             this.startTimeMs = startTimeMs;
@@ -107,9 +102,19 @@ public class LyricsFetcher {
     private static final Pattern HAS_ENHANCED_WORD = Pattern.compile("<\\d+:\\d+(?:\\.\\d+)?>");
     private static final Pattern KRC_LINE_PATTERN = Pattern.compile("^\\[(\\d+),(\\d+)\\](.*)$");
     private static final Pattern KRC_WORD_PATTERN = Pattern.compile("<(\\d+),(\\d+),\\d+>([^<]*)");
+    private static final Pattern TOPIC_SUFFIX = Pattern.compile("(?i)\\s*(?:-\\s*topic|vevo)$");
+    private static final Pattern DASHED_TITLE = Pattern.compile("^(.+?)\\s+[-\u2013\u2014]\\s+(.+)$");
+    private static final Pattern BRACKETED_NOISE = Pattern.compile(
+        "(?i)\\s*[(\\[]\\s*(?:(?:remaster(?:ed)?|official|music|video|audio|lyrics?|visuali[sz]er|live|mono|stereo|version|radio|edit(?:ed)?|deluxe|bonus|explicit|clean|hd|hq|4k|mv|anniversary|edition|\\d{4})(?:[\\s,&/]+(?:remaster(?:ed)?|official|music|video|audio|lyrics?|visuali[sz]er|live|mono|stereo|version|radio|edit(?:ed)?|deluxe|bonus|explicit|clean|hd|hq|4k|mv|anniversary|edition|\\d{4}))*|(?:feat\\.?|ft\\.?|featuring)\\s[^)\\]]*)\\s*[)\\]]"
+    );
+    private static final Pattern DASHED_NOISE = Pattern.compile(
+        "(?i)\\s+[-\u2013\u2014]\\s+(?:remaster(?:ed)?|official|music|video|audio|lyrics?|visuali[sz]er|live|mono|stereo|version|radio|edit(?:ed)?|deluxe|bonus|explicit|clean|hd|hq|4k|mv|anniversary|edition|\\d{4})(?:[\\s,&/-]+(?:remaster(?:ed)?|official|music|video|audio|lyrics?|visuali[sz]er|live|mono|stereo|version|radio|edit(?:ed)?|deluxe|bonus|explicit|clean|hd|hq|4k|mv|anniversary|edition|\\d{4}))*$"
+    );
     private static final Pattern PARENS_PATTERN = Pattern.compile("\\s*[\\(\\[\\{][^\\)\\]\\}]*[\\)\\]\\}]");
-    private static final Pattern FEAT_PATTERN = Pattern.compile("(?i)\\s+(feat\\.|ft\\.|featuring|with)\\b.*$");
-    private static final Pattern DASH_EDITION_PATTERN = Pattern.compile("(?i)\\s+-\\s*(?:remaster(?:ed)?|live|radio\\s*edit|single|album|deluxe|acoustic|instrumental|explicit|clean|bonus|version|mix|mono|stereo).*$");
+    private static final Pattern FEAT_PATTERN = Pattern.compile("(?i)\\s+(?:feat\\.|ft\\.|featuring|with)\\b.*$");
+    private static final Pattern CREDIT_LINE = Pattern.compile("^(?i)(?:作[词曲]|編?[词曲]|lyrics?|lyricist|composed|produced|arranged)(?:\\s+by)?\\s*[:：].*$");
+    private static final Pattern PROFANITY = Pattern.compile("(?i)fuck|shit|bitch|nigg|pussy|cunt|whore");
+    private static final Pattern CLEAN_TITLE = Pattern.compile("(?i)\\b(?:clean|edited|radio edit)\\b");
 
     public static void onTrackChanged(String title, String artist) {
         onTrackChanged(title, artist, MediaTracker.currentDurationMs);
@@ -189,40 +194,70 @@ public class LyricsFetcher {
 
     private static void runFetch(int gen, String rawTitle, String rawArtist, long durationMs) {
         try {
-            String cleanTitle = cleanTitle(rawTitle);
-            String softTitle = cleanTitleSoft(rawTitle);
-            String cleanArtist = cleanArtist(rawArtist);
+            List<QueryCandidate> candidates = buildQueryCandidates(rawTitle, rawArtist);
             double durationSec = durationMs > 0L ? durationMs / 1000.0 : -1.0;
+            boolean wantClean = CLEAN_TITLE.matcher(rawTitle == null ? "" : rawTitle).find();
 
             FetchResult best = null;
+            int bestRank = -1;
 
-            // 1. lrc.red (studio word-level YAML)
-            FetchResult lrcRed = fetchFromLrcRed(cleanTitle, cleanArtist, durationSec);
-            if (lrcRed != null && !lrcRed.lines.isEmpty()) {
-                best = lrcRed;
+            // 1. lrc.red (curated studio word-level YAML)
+            for (QueryCandidate cand : candidates) {
+                if (gen != FETCH_GEN.get()) return;
+                FetchResult res = fetchFromLrcRed(cand.track, cand.artist, durationSec, wantClean);
+                if (res != null && !res.lines.isEmpty()) {
+                    int rank = rankResult(res, cand, wantClean, 2);
+                    if (rank > bestRank) {
+                        bestRank = rank;
+                        best = res;
+                    }
+                    if (rank >= 12) {
+                        break;
+                    }
+                }
             }
 
-            // 2. lrclib.net (duration-scored LRC or enhanced LRC)
-            if (best == null && gen == FETCH_GEN.get()) {
-                FetchResult lrclib = fetchFromLrcLib(rawTitle, cleanTitle, softTitle, rawArtist, cleanArtist, durationSec);
-                if (lrclib != null && !lrclib.lines.isEmpty()) {
-                    best = lrclib;
+            // 2. lrclib.net (duration-scored LRC / enhanced LRC / lyricsfile)
+            if (bestRank < 12 && gen == FETCH_GEN.get()) {
+                FetchResult res = fetchFromLrcLib(candidates, rawTitle, rawArtist, durationSec, wantClean);
+                if (res != null && !res.lines.isEmpty()) {
+                    int rank = rankResult(res, candidates.get(0), wantClean, 1);
+                    if (rank > bestRank) {
+                        bestRank = rank;
+                        best = res;
+                    }
                 }
             }
 
             // 3. KuGou (KRC word-by-word encrypted format)
-            if (best == null && gen == FETCH_GEN.get()) {
-                FetchResult kugou = fetchFromKuGou(cleanTitle, cleanArtist, durationMs);
-                if (kugou != null && !kugou.lines.isEmpty()) {
-                    best = kugou;
+            if (bestRank < 12 && gen == FETCH_GEN.get()) {
+                for (QueryCandidate cand : candidates) {
+                    if (gen != FETCH_GEN.get()) return;
+                    FetchResult res = fetchFromKuGou(cand.track, cand.artist, durationMs);
+                    if (res != null && !res.lines.isEmpty()) {
+                        int rank = rankResult(res, cand, wantClean, 1);
+                        if (rank > bestRank) {
+                            bestRank = rank;
+                            best = res;
+                        }
+                        break;
+                    }
                 }
             }
 
             // 4. NetEase fallback
             if (best == null && gen == FETCH_GEN.get()) {
-                FetchResult netease = fetchFromNetEase(cleanTitle, cleanArtist, durationMs);
-                if (netease != null && !netease.lines.isEmpty()) {
-                    best = netease;
+                for (QueryCandidate cand : candidates) {
+                    if (gen != FETCH_GEN.get()) return;
+                    FetchResult res = fetchFromNetEase(cand.track, cand.artist, durationMs);
+                    if (res != null && !res.lines.isEmpty()) {
+                        int rank = rankResult(res, cand, wantClean, 0);
+                        if (rank > bestRank) {
+                            bestRank = rank;
+                            best = res;
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -245,7 +280,6 @@ public class LyricsFetcher {
                 processed = postProcessSyncedLines(processed);
                 estimateMissingWordTimings(processed);
             }
-            analyzeImportantLyrics(processed);
 
             boolean anyWordSync = false;
             for (LyricLine line : processed) {
@@ -273,11 +307,89 @@ public class LyricsFetcher {
         }
     }
 
+    private static int rankResult(FetchResult res, QueryCandidate cand, boolean wantClean, int providerBias) {
+        if (res == null || res.lines.isEmpty()) return -1;
+        boolean hasWord = false;
+        boolean hasProfanity = false;
+        for (LyricLine line : res.lines) {
+            if (line.hasWordTimings) {
+                hasWord = true;
+            }
+            if (PROFANITY.matcher(line.fullLine).find()) {
+                hasProfanity = true;
+            }
+        }
+        int rank = 0;
+        if (res.synced) rank += 2;
+        if (hasWord) rank += 6;
+        if (wantClean == !hasProfanity) rank += 3;
+        rank += providerBias;
+        return rank;
+    }
+
+    private static List<QueryCandidate> buildQueryCandidates(String rawTitle, String rawArtist) {
+        List<QueryCandidate> out = new ArrayList<QueryCandidate>();
+        Set<String> seen = new LinkedHashSet<String>();
+
+        String cleanedArtist = cleanArtist(rawArtist);
+        String normArtist = normalizeAlphaNum(cleanedArtist);
+        String softTitle = cleanTitleSoft(rawTitle);
+        String strippedTitle = cleanTitle(rawTitle);
+
+        // First check "Artist - Track" dashed titles (e.g. YouTube "Tame Impala - The Less I Know The Better" by "tameimpalavevo")
+        Matcher dm = DASHED_TITLE.matcher(strippedTitle);
+        if (dm.matches()) {
+            String left = cleanTitle(dm.group(1));
+            String right = cleanTitle(dm.group(2));
+            String normLeft = normalizeAlphaNum(left);
+            String normRight = normalizeAlphaNum(right);
+
+            boolean leftMatchesChannel = !normArtist.isEmpty() && !normLeft.isEmpty()
+                    && (normLeft.equals(normArtist) || normLeft.contains(normArtist) || normArtist.contains(normLeft));
+            boolean rightMatchesChannel = !normArtist.isEmpty() && !normRight.isEmpty()
+                    && (normRight.equals(normArtist) || normRight.contains(normArtist) || normArtist.contains(normRight));
+
+            if (rightMatchesChannel) {
+                addCandidate(out, seen, left, right);
+            }
+            if (!left.isEmpty() && !right.isEmpty()) {
+                // Standard YouTube uploader order: Artist - Track
+                addCandidate(out, seen, right, left);
+                if (!normArtist.isEmpty() && !leftMatchesChannel) {
+                    addCandidate(out, seen, right, cleanedArtist);
+                }
+                addCandidate(out, seen, left, right);
+            }
+        }
+
+        addCandidate(out, seen, strippedTitle, cleanedArtist);
+        if (!softTitle.equalsIgnoreCase(strippedTitle)) {
+            addCandidate(out, seen, softTitle, cleanedArtist);
+        }
+        if (!strippedTitle.equalsIgnoreCase(rawTitle) || !cleanedArtist.equalsIgnoreCase(rawArtist)) {
+            addCandidate(out, seen, cleanTitle(rawTitle), rawArtist == null ? "" : rawArtist.trim());
+        }
+        if (!strippedTitle.isEmpty()) {
+            addCandidate(out, seen, strippedTitle, "");
+        }
+        return out;
+    }
+
+    private static void addCandidate(List<QueryCandidate> out, Set<String> seen, String track, String artist) {
+        String t = track == null ? "" : track.trim();
+        String a = artist == null ? "" : artist.trim();
+        if (t.isEmpty()) return;
+        String key = (t + "\u0000" + a).toLowerCase(Locale.ROOT);
+        if (seen.add(key)) {
+            out.add(new QueryCandidate(t, a));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Provider 1: lrc.red (.lyricsfile.yaml word-level sync)
     // -------------------------------------------------------------------------
 
-    private static FetchResult fetchFromLrcRed(String cleanTitle, String cleanArtist, double durationSec) {
+    private static FetchResult fetchFromLrcRed(String cleanTitle, String cleanArtist, double durationSec, boolean wantClean) {
         try {
             String query = (cleanArtist + " " + cleanTitle).trim();
             if (query.isEmpty()) {
@@ -295,8 +407,7 @@ public class LyricsFetcher {
             String normTarget = normalizeAlphaNum(cleanTitle);
             String normArtist = normalizeAlphaNum(cleanArtist);
 
-            String bestIsrc = null;
-            int bestScore = Integer.MIN_VALUE;
+            List<ScoredHit> rankedHits = new ArrayList<ScoredHit>();
 
             for (JsonElement el : hits) {
                 if (!el.isJsonObject()) {
@@ -307,8 +418,11 @@ public class LyricsFetcher {
                 if (!isrc.matches("[A-Za-z0-9]{6,20}")) {
                     continue;
                 }
-                String hitTitle = getString(hit, "title");
-                String normHit = normalizeAlphaNum(hitTitle);
+                String hitTitleRaw = getString(hit, "title");
+                String normHit = normalizeAlphaNum(cleanTitle(hitTitleRaw));
+                if (normHit.isEmpty()) {
+                    normHit = normalizeAlphaNum(hitTitleRaw);
+                }
                 if (normHit.isEmpty() || normTarget.isEmpty()) {
                     continue;
                 }
@@ -328,30 +442,51 @@ public class LyricsFetcher {
                     }
                 }
 
-                String hitArtist = normalizeAlphaNum(getString(hit, "artist"));
-                int score = normHit.equals(normTarget) ? 200 : 100;
+                String hitArtist = normalizeAlphaNum(cleanArtist(getString(hit, "artist")));
+                int score = normHit.equals(normTarget) ? 240 : 120;
                 if (!normArtist.isEmpty() && !hitArtist.isEmpty()
                         && (hitArtist.contains(normArtist) || normArtist.contains(hitArtist))) {
-                    score += 300;
+                    score += 320;
+                }
+                if (CLEAN_TITLE.matcher(hitTitleRaw).find() == wantClean) {
+                    score += 90;
                 }
                 score -= (int) (durDiff * 20.0);
+                rankedHits.add(new ScoredHit(isrc, score));
+            }
 
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestIsrc = isrc;
+            if (rankedHits.isEmpty()) {
+                return null;
+            }
+            Collections.sort(rankedHits, new Comparator<ScoredHit>() {
+                @Override
+                public int compare(ScoredHit a, ScoredHit b) {
+                    return Integer.compare(b.score, a.score);
+                }
+            });
+
+            FetchResult bestRes = null;
+            int bestResRank = -1;
+            int limit = Math.min(3, rankedHits.size());
+            for (int i = 0; i < limit; i++) {
+                String yaml = httpGet("https://lrc.red/s/" + rankedHits.get(i).isrc + ".lyricsfile.yaml", 4500);
+                if (yaml == null || yaml.isEmpty()) {
+                    continue;
+                }
+                List<LyricLine> lines = parseLrcRedYaml(yaml);
+                if (!lines.isEmpty()) {
+                    FetchResult candRes = new FetchResult("lrc.red", lines, true);
+                    int r = rankResult(candRes, new QueryCandidate(cleanTitle, cleanArtist), wantClean, 2);
+                    if (r > bestResRank) {
+                        bestResRank = r;
+                        bestRes = candRes;
+                    }
+                    if (bestResRank >= 12) {
+                        break;
+                    }
                 }
             }
-
-            if (bestIsrc == null) {
-                return null;
-            }
-
-            String yaml = httpGet("https://lrc.red/s/" + bestIsrc + ".lyricsfile.yaml", 4500);
-            if (yaml == null || yaml.isEmpty()) {
-                return null;
-            }
-            List<LyricLine> lines = parseLrcRedYaml(yaml);
-            return lines.isEmpty() ? null : new FetchResult("lrc.red", lines, true);
+            return bestRes;
         } catch (Throwable ignored) {
             return null;
         }
@@ -494,28 +629,34 @@ public class LyricsFetcher {
     // Provider 2: lrclib.net (duration-scored + enhanced word-tag support)
     // -------------------------------------------------------------------------
 
-    private static FetchResult fetchFromLrcLib(String rawTitle, String cleanTitle, String softTitle,
-                                               String rawArtist, String cleanArtist, double durationSec) {
+    private static FetchResult fetchFromLrcLib(List<QueryCandidate> candidates, String rawTitle, String rawArtist,
+                                               double durationSec, boolean wantClean) {
         Set<String> urls = new LinkedHashSet<String>();
-        if (!cleanTitle.isEmpty() && !cleanArtist.isEmpty()) {
-            urls.add("https://lrclib.net/api/search?track_name=" + encode(cleanTitle) + "&artist_name=" + encode(cleanArtist));
+        for (QueryCandidate cand : candidates) {
+            if (!cand.track.isEmpty() && !cand.artist.isEmpty()) {
+                urls.add("https://lrclib.net/api/search?track_name=" + encode(cand.track) + "&artist_name=" + encode(cand.artist));
+                urls.add("https://lrclib.net/api/search?q=" + encode(cand.artist + " " + cand.track));
+            }
+            if (!cand.track.isEmpty()) {
+                urls.add("https://lrclib.net/api/search?q=" + encode(cand.track));
+            }
         }
-        if (!softTitle.isEmpty() && !rawArtist.isEmpty()) {
-            urls.add("https://lrclib.net/api/search?track_name=" + encode(softTitle) + "&artist_name=" + encode(rawArtist));
-        }
-        if (!cleanArtist.isEmpty() && !cleanTitle.isEmpty()) {
-            urls.add("https://lrclib.net/api/search?q=" + encode(cleanArtist + " " + cleanTitle));
-        }
-        if (!cleanTitle.isEmpty()) {
-            urls.add("https://lrclib.net/api/search?q=" + encode(cleanTitle));
-        }
-        if (!rawTitle.isEmpty() && !rawTitle.equals(cleanTitle)) {
-            urls.add("https://lrclib.net/api/search?q=" + encode((rawArtist + " " + rawTitle).trim()));
+        String fallbackQuery = ((rawArtist == null ? "" : rawArtist) + " " + (rawTitle == null ? "" : rawTitle)).trim();
+        if (!fallbackQuery.isEmpty()) {
+            urls.add("https://lrclib.net/api/search?q=" + encode(fallbackQuery));
         }
 
-        String normTargetTitle = normalizeAlphaNum(cleanTitle.isEmpty() ? rawTitle : cleanTitle);
-        String normTargetArtist = normalizeAlphaNum(cleanArtist);
+        List<String> targetTitles = new ArrayList<String>();
+        List<String> targetArtists = new ArrayList<String>();
+        for (QueryCandidate cand : candidates) {
+            String nt = normalizeAlphaNum(cand.track);
+            if (!nt.isEmpty() && !targetTitles.contains(nt)) targetTitles.add(nt);
+            String na = normalizeAlphaNum(cand.artist);
+            if (!na.isEmpty() && !targetArtists.contains(na)) targetArtists.add(na);
+        }
 
+        String bestYaml = null;
+        int bestYamlScore = Integer.MIN_VALUE;
         String bestSynced = null;
         int bestSyncedScore = Integer.MIN_VALUE;
         String bestPlain = null;
@@ -549,22 +690,46 @@ public class LyricsFetcher {
                         }
                     }
 
-                    String candTrack = normalizeAlphaNum(cleanTitle(getString(obj, "trackName")));
+                    String rawCandTrack = getString(obj, "trackName");
+                    String candTrack = normalizeAlphaNum(cleanTitle(rawCandTrack));
                     String candArtist = normalizeAlphaNum(cleanArtist(getString(obj, "artistName")));
 
                     int baseScore = 0;
-                    if (!normTargetArtist.isEmpty() && !candArtist.isEmpty()
-                            && (candArtist.contains(normTargetArtist) || normTargetArtist.contains(candArtist))) {
-                        baseScore += 300;
-                    }
-                    if (!normTargetTitle.isEmpty() && !candTrack.isEmpty()) {
-                        if (candTrack.equals(normTargetTitle)) {
-                            baseScore += 100;
-                        } else if (candTrack.contains(normTargetTitle) || normTargetTitle.contains(candTrack)) {
-                            baseScore += 40;
+                    if (!candArtist.isEmpty()) {
+                        for (String normTargetArtist : targetArtists) {
+                            if (candArtist.contains(normTargetArtist) || normTargetArtist.contains(candArtist)) {
+                                baseScore += 320;
+                                break;
+                            }
                         }
                     }
+                    if (!candTrack.isEmpty()) {
+                        int titleBonus = 0;
+                        for (String normTargetTitle : targetTitles) {
+                            if (candTrack.equals(normTargetTitle)) {
+                                titleBonus = Math.max(titleBonus, 200);
+                            } else if (candTrack.contains(normTargetTitle) || normTargetTitle.contains(candTrack)) {
+                                titleBonus = Math.max(titleBonus, 90);
+                            }
+                        }
+                        baseScore += titleBonus;
+                    }
+                    if (CLEAN_TITLE.matcher(rawCandTrack).find() == wantClean) {
+                        baseScore += 80;
+                    }
                     baseScore -= (int) (durDiff * 20.0);
+
+                    String yaml = getString(obj, "lyricsfile");
+                    if (!yaml.isEmpty()) {
+                        int yScore = baseScore + 2500;
+                        if (obj.has("hasWordSync") && !obj.get("hasWordSync").isJsonNull() && obj.get("hasWordSync").getAsBoolean()) {
+                            yScore += 500;
+                        }
+                        if (yScore > bestYamlScore) {
+                            bestYamlScore = yScore;
+                            bestYaml = yaml;
+                        }
+                    }
 
                     String syncedLyrics = getString(obj, "syncedLyrics");
                     if (!syncedLyrics.isEmpty()) {
@@ -585,13 +750,19 @@ public class LyricsFetcher {
                     }
                 }
 
-                if (bestSyncedScore >= 2300) {
+                if (bestYamlScore >= 2900 || bestSyncedScore >= 2400) {
                     break;
                 }
             } catch (Throwable ignored) {
             }
         }
 
+        if (bestYaml != null) {
+            List<LyricLine> lines = parseLrcRedYaml(bestYaml);
+            if (!lines.isEmpty()) {
+                return new FetchResult("lrclib.net", lines, true);
+            }
+        }
         if (bestSynced != null) {
             List<LyricLine> lines = parseLrcText(bestSynced);
             if (!lines.isEmpty()) {
@@ -940,13 +1111,22 @@ public class LyricsFetcher {
             }
         });
 
-        List<LyricLine> out = new ArrayList<LyricLine>(input.size());
+        List<LyricLine> filtered = new ArrayList<LyricLine>(input.size());
         for (int i = 0; i < input.size(); i++) {
-            LyricLine cur = input.get(i);
+            LyricLine l = input.get(i);
+            if (filtered.isEmpty() && CREDIT_LINE.matcher(l.fullLine.trim()).matches()) {
+                continue;
+            }
+            filtered.add(l);
+        }
+
+        List<LyricLine> out = new ArrayList<LyricLine>(filtered.size());
+        for (int i = 0; i < filtered.size(); i++) {
+            LyricLine cur = filtered.get(i);
             long start = Math.max(0L, cur.startTimeMs);
             long end = cur.endTimeMs;
-            if (i + 1 < input.size()) {
-                long nextStart = input.get(i + 1).startTimeMs;
+            if (i + 1 < filtered.size()) {
+                long nextStart = filtered.get(i + 1).startTimeMs;
                 if (nextStart > start) {
                     end = Math.min(Math.max(end, start + 500L), nextStart);
                     if (end <= start) {
@@ -1053,73 +1233,6 @@ public class LyricsFetcher {
             long we = line.startTimeMs + Math.round((i + 1) * step);
             line.words.add(new LyricWord(ws, Math.max(ws + 40L, we), tokens.get(i)));
         }
-    }
-
-    /**
-     * Scores chorus/hook repetition and vocal emphasis so important lyrics can scale larger.
-     */
-    private static void analyzeImportantLyrics(List<LyricLine> lines) {
-        Map<String, Integer> freq = new HashMap<String, Integer>();
-        for (LyricLine line : lines) {
-            String key = normalizeAlphaNum(line.fullLine);
-            if (key.length() >= 6) {
-                Integer prev = freq.get(key);
-                freq.put(key, prev == null ? 1 : prev + 1);
-            }
-        }
-
-        for (LyricLine line : lines) {
-            String trimmed = line.fullLine.trim();
-            String key = normalizeAlphaNum(trimmed);
-            int count = freq.containsKey(key) ? freq.get(key) : 1;
-
-            float boost = 1.0f;
-            if (count >= 3) {
-                boost = 1.28f;
-            } else if (count == 2) {
-                boost = 1.20f;
-            }
-
-            if (trimmed.endsWith("!") || trimmed.endsWith("?!") || trimmed.endsWith("!?")) {
-                boost = Math.max(boost, 1.24f);
-            }
-
-            int uppercaseWords = 0;
-            for (LyricWord w : line.words) {
-                if (isEmphaticWord(w.text)) {
-                    w.important = true;
-                    w.boost = w.text.endsWith("!") ? 1.25f : 1.16f;
-                    uppercaseWords++;
-                }
-            }
-            if (uppercaseWords >= 2) {
-                boost = Math.max(boost, 1.22f);
-            }
-
-            line.important = boost > 1.05f;
-            line.importanceBoost = Math.min(1.32f, boost);
-        }
-    }
-
-    private static boolean isEmphaticWord(String token) {
-        if (token == null || token.isEmpty()) {
-            return false;
-        }
-        if (token.endsWith("!")) {
-            return true;
-        }
-        int letters = 0;
-        int uppers = 0;
-        for (int i = 0; i < token.length(); i++) {
-            char c = token.charAt(i);
-            if (Character.isLetter(c)) {
-                letters++;
-                if (Character.isUpperCase(c)) {
-                    uppers++;
-                }
-            }
-        }
-        return letters >= 3 && uppers == letters;
     }
 
     private static List<String> tokenizeWords(String line) {
@@ -1243,9 +1356,10 @@ public class LyricsFetcher {
         if (title == null) {
             return "";
         }
-        String s = PARENS_PATTERN.matcher(title).replaceAll("");
+        String s = BRACKETED_NOISE.matcher(title).replaceAll("");
+        s = PARENS_PATTERN.matcher(s).replaceAll("");
         s = FEAT_PATTERN.matcher(s).replaceAll("");
-        s = DASH_EDITION_PATTERN.matcher(s).replaceAll("");
+        s = DASHED_NOISE.matcher(s).replaceAll("");
         return s.replaceAll("\\s+", " ").trim();
     }
 
@@ -1253,14 +1367,17 @@ public class LyricsFetcher {
         if (title == null) {
             return "";
         }
-        return FEAT_PATTERN.matcher(title).replaceAll("").replaceAll("\\s+", " ").trim();
+        String s = BRACKETED_NOISE.matcher(title).replaceAll("");
+        s = FEAT_PATTERN.matcher(s).replaceAll("");
+        s = DASHED_NOISE.matcher(s).replaceAll("");
+        return s.replaceAll("\\s+", " ").trim();
     }
 
     private static String cleanArtist(String artist) {
         if (artist == null) {
             return "";
         }
-        String s = artist.replaceAll("(?i)\\s*-\\s*Topic$", "");
+        String s = TOPIC_SUFFIX.matcher(artist.trim()).replaceAll("");
         s = FEAT_PATTERN.matcher(s).replaceAll("");
         int amp = s.indexOf(" & ");
         if (amp > 0) {
@@ -1356,6 +1473,26 @@ public class LyricsFetcher {
             this.provider = provider;
             this.lines = lines;
             this.synced = synced;
+        }
+    }
+
+    private static final class QueryCandidate {
+        final String track;
+        final String artist;
+
+        QueryCandidate(String track, String artist) {
+            this.track = track;
+            this.artist = artist;
+        }
+    }
+
+    private static final class ScoredHit {
+        final String isrc;
+        final int score;
+
+        ScoredHit(String isrc, int score) {
+            this.isrc = isrc;
+            this.score = score;
         }
     }
 
