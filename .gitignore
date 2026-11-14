@@ -1,6 +1,7 @@
 # Gradle & build outputs
 .gradle/
 .gradle-portable/
+.oneconfig-api/
 build/
 out/
 

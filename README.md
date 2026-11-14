@@ -1,28 +1,35 @@
 # AirLyrics
 
-A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time synced lyrics floating in the world and on a karaoke HUD bar, pulled directly from your active desktop media session without needing any API keys.
+A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time synced lyrics floating in the 3D world and on a karaoke HUD overlay, pulled directly from your active desktop media session without needing any API keys.
 
 ## Features
 
-- **Floating 3D World Lyrics:** Words or full lines pop into the air in front of your camera, gently drift upward, and fade out. Works across first-person and third-person perspectives.
-- **Karaoke HUD Bar:** Bottom-left overlay showing live line progress and the upcoming line.
-- **Zero-Auth Media Sync:** Reads the active media session (Spotify, browsers, desktop players) natively on Windows (`Windows.Media.Control`) and Linux (`MPRIS` via `playerctl` or built-in `gdbus`).
-- **Automatic Lyrics Lookup:** Fetches timed `.lrc` lyrics from [lrclib.net](https://lrclib.net) with NetEase fallback.
-- **In-Game Settings GUI (`L`):** Toggle world/HUD display, switch between word-by-word or line mode, scatter or centered layout, uppercase, pastel or solid color, scale (`50%`–`250%`), and sync offset (`±50ms` steps).
+- **EvergreenHUD-Grade Media & Lyrics Sync:**
+  - Direct WinRT COM (`GlobalSystemMediaTransportControlsSessionManager`) polling via JNA on Windows with timeline `LastUpdatedTime` age compensation, PowerShell fallback, and duration-aware MPRIS (`playerctl` / `gdbus`) on Linux.
+  - Multi-provider lookup across [`lrc.red`](https://lrc.red) (YAML word-level sync), [`lrclib.net`](https://lrclib.net) (duration-scored & enhanced LRC word tags), KuGou (`KRC` decrypted word-sync), and NetEase fallback.
+  - Beat-paced syllable and punctuation word-timing estimator (`estimateWordTimings`) for plain line-synced tracks, plus exponential playback clock smoothing and seek recovery.
+- **Full Ornithe 1.8.9 OneConfig Support:**
+  - Annotated OneConfig v1 configuration screen (`Config` + `Category.HUD`) with switches, sliders, live RGB/Chroma color picker, `@DependsOn` visibility, and quick `Refetch` / `Reset` buttons.
+  - Interactive HUD Editor placement, scaling, and live sample preview via `OneConfigHudWrapper` (falls back automatically to the built-in settings GUI if OneConfig is absent).
+- **Floating 3D World & HUD Display:** Word-by-word or full-line floating lyrics projected in 3D space (scatter or centered arc) plus a smooth HUD bar.
+- **Opacity Setting:** Configurable opacity (`10%`–`100%`) applied cleanly across world words, HUD lines, shadows, and bloom halos.
+- **Shine & Glow (Shader & Dynamic Lighting Safe):** Toggleable emissive bloom and shimmer highlight using destination-alpha-preserving additive blending, full-bright lightmap preservation/restoration, `0.003F` alpha test threshold, and Cera shader text-batch / shadow-pass cooperation.
+- **Bigger Important Lyrics (ON by default):** Automatically detects repeated chorus/hook lines and emphasized words and scales them larger (toggleable).
 
 ## Requirements
 
 - **Minecraft:** `1.8.9`
 - **Mod Loader:** Fabric Loader `>=0.15.0` with Ornithe (compatible with OneClient)
+- **Optional:** OneConfig v1 for Ornithe `1.8.9` (`oneconfigv1 >=1.6.0`)
 - **OS:** Windows 10 / 11 or Linux (MPRIS-compatible players; uses `playerctl` if installed, otherwise built-in `gdbus`)
 
 ## Usage
 
-1. Drop the built `airlyrics-<version>.jar` into your `mods` folder.
-2. Start playing music in Spotify, your browser, or any desktop media player that exposes Windows media controls or Linux MPRIS.
-3. Press **`L`** in-game (rebindable in Controls under **AirLyrics**) to open the settings screen.
+1. Drop `airlyrics-1.1.0+mc1.8.9.jar` into your `mods` folder.
+2. Start playing music in Spotify, your browser, or any desktop player exposing Windows GSMTC or Linux MPRIS.
+3. Press **`L`** in-game (rebindable under Controls -> **AirLyrics**) to open OneConfig's AirLyrics settings (or the built-in fallback GUI).
 
-Config is stored at `config/airlyrics.json`.
+Core config persists at `config/airlyrics.json` alongside OneConfig's profile storage.
 
 ## Building from Source
 
@@ -33,12 +40,12 @@ On Windows:
 .\build.ps1
 ```
 
-On Linux / macOS (with Gradle 8.12.1 installed):
+On Linux / macOS (with Gradle 8.12.1):
 ```bash
 gradle build
 ```
 
-The compiled mod jar will be output to `build/libs/`.
+The compiled mod jar is output to `build/libs/`.
 
 ## Contact
 

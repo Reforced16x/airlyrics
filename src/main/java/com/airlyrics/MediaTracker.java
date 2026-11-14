@@ -1,12 +1,18 @@
 package com.airlyrics;
 
+import com.sun.jna.Function;
+import com.sun.jna.Library;
+import com.sun.jna.Memory;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.WString;
+import com.sun.jna.ptr.IntByReference;
+import com.sun.jna.ptr.LongByReference;
+import com.sun.jna.ptr.PointerByReference;
+
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -14,481 +20,773 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Tracks OS media playback metadata and accurate timeline timestamps.
+ * Uses direct WinRT COM (GSMTC) via JNA on Windows (inspired by EvergreenHUD)
+ * with PowerShell fallback, and MPRIS (playerctl / gdbus) on Linux.
+ */
 public class MediaTracker {
     public static volatile String currentTitle = "";
     public static volatile String currentArtist = "";
+    public static volatile String currentAlbum = "";
+    public static volatile String currentPlayer = "";
+    public static volatile String currentBackend = "None";
+
+    public static volatile long currentPositionMs = 0L;
+    public static volatile long currentDurationMs = 0L;
+    public static volatile long lastPollTimeMs = 0L;
     public static volatile boolean isPlaying = false;
+    public static volatile boolean hasMedia = false;
 
-    private static volatile long lastReportedPositionMs = 0;
-    private static volatile long lastUpdateTimestampMs = 0;
-    private static volatile String lastLog = "";
+    private static volatile String lastTrackKey = "";
+    private static volatile String lastActivePlayer = "";
+    private static volatile boolean running = false;
 
-    private static volatile boolean playerctlUnavailable = false;
-    private static volatile boolean gdbusUnavailable = false;
+    private static final long POLL_INTERVAL_MS = 800L;
+    private static final long FILETIME_UNIX_EPOCH_MS = 11644473600000L;
 
-    private static final boolean IS_WINDOWS =
-        System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-    private static final boolean IS_LINUX =
-        System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux");
+    private static ScheduledExecutorService executor;
+    private static volatile WinRtMedia winRtMedia;
+    private static int winRtFailureCount = 0;
+    private static boolean winRtDisabled = false;
 
-    private static final Pattern MPRIS_BUS_PATTERN =
-        Pattern.compile("org\\.mpris\\.MediaPlayer2\\.[A-Za-z0-9_.-]+");
-    private static final Pattern GVARIANT_INT_PATTERN =
-        Pattern.compile("(-?\\d+)(?=\\s*[>),])");
-
-    private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "AirLyrics-Media");
-        t.setDaemon(true);
-        return t;
-    });
-
-    private static final String PS_SCRIPT = String.join("\n",
-        "$ErrorActionPreference = 'Stop'",
-        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
-        "try {",
-        "  Add-Type -AssemblyName System.Runtime.WindowsRuntime",
-        "  $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]",
-        "  function Await($op, $type) { $t = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }",
-        "  $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]",
-        "  $mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])",
-        "  $session = $null",
-        "  foreach ($s in $mgr.GetSessions()) { if ([string]$s.GetPlaybackInfo().PlaybackStatus -eq 'Playing') { $session = $s; break } }",
-        "  if ($session -eq $null) { $session = $mgr.GetCurrentSession() }",
-        "  if ($session -eq $null) { 'NONE' } else {",
-        "    $info = Await ($session.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])",
-        "    $tl = $session.GetTimelineProperties()",
-        "    $status = [string]$session.GetPlaybackInfo().PlaybackStatus",
-        "    $pos = [math]::Round($tl.Position.TotalMilliseconds)",
-        "    $age = [math]::Round(([DateTimeOffset]::UtcNow - $tl.LastUpdatedTime).TotalMilliseconds)",
-        "    if ($status -eq 'Playing' -and $age -gt 0) { $pos += $age }",
-        "    $tab = [string][char]9",
-        "    'OK' + $tab + $status + $tab + $pos + $tab + $info.Title + $tab + $info.Artist",
-        "  }",
-        "} catch { 'ERR' + [string][char]9 + $_.Exception.Message }"
-    );
-
-    private static final String PS_ENCODED = IS_WINDOWS
-        ? Base64.getEncoder().encodeToString(PS_SCRIPT.getBytes(StandardCharsets.UTF_16LE))
-        : "";
-
-    public static void start() {
-        EXECUTOR.scheduleWithFixedDelay(MediaTracker::pollMedia, 1000, 1500, TimeUnit.MILLISECONDS);
-    }
-
-    public static long getCurrentPositionMs() {
-        if (!isPlaying) return lastReportedPositionMs + LyricsConfig.syncOffsetMs;
-        long elapsed = System.currentTimeMillis() - lastUpdateTimestampMs;
-        return lastReportedPositionMs + elapsed + LyricsConfig.syncOffsetMs;
-    }
-
-    private static void log(String msg) {
-        if (!msg.equals(lastLog)) {
-            lastLog = msg;
-            System.out.println("[AirLyrics] " + msg);
-        }
-    }
-
-    private static void clearSession(String reason) {
-        isPlaying = false;
-        log(reason);
-    }
-
-    private static void updateTrack(boolean playing, long posMs, String title, String artist) {
-        boolean sameTrack = title.equals(currentTitle) && artist.equals(currentArtist);
-        // Some Linux MPRIS players (e.g. older Spotify builds) keep reporting 0 during playback
-        boolean stuckAtZero = playing && posMs <= 0 && lastReportedPositionMs == 0 && isPlaying && sameTrack;
-
-        isPlaying = playing;
-        if (!stuckAtZero) {
-            lastReportedPositionMs = Math.max(0L, posMs);
-            lastUpdateTimestampMs = System.currentTimeMillis();
-        }
-
-        if (!sameTrack) {
-            currentTitle = title;
-            currentArtist = artist;
-            log("now playing: " + artist + " - " + title);
-            LyricsRenderer.clearActiveWords();
-            LyricsFetcher.fetchAsync(title, artist);
-        }
-    }
-
-    private static void pollMedia() {
-        if (!LyricsConfig.enabled) return;
-        if (IS_WINDOWS) {
-            pollWindows();
-        } else if (IS_LINUX) {
-            pollLinux();
-        } else {
-            clearSession("unsupported OS for media tracking: " + System.getProperty("os.name", "unknown"));
-        }
-    }
-
-    private static void pollWindows() {
-        try {
-            CmdResult res = runCommand(8,
-                "powershell.exe", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-EncodedCommand", PS_ENCODED);
-            if (res == null) {
-                log("powershell timed out");
-                return;
-            }
-
-            String result = null;
-            for (String line : res.lines) {
-                if (line.startsWith("OK\t") || line.equals("NONE") || line.startsWith("ERR\t")) {
-                    result = line;
-                } else if (!line.isEmpty()) {
-                    log("powershell: " + line);
-                }
-            }
-
-            if (result == null) {
-                clearSession("no usable output from powershell");
-                return;
-            }
-            if (result.equals("NONE")) {
-                clearSession("no active media session");
-                return;
-            }
-            if (result.startsWith("ERR\t")) {
-                clearSession("powershell error: " + result.substring(4));
-                return;
-            }
-
-            String[] parts = result.split("\t", 5);
-            if (parts.length < 5) {
-                clearSession("unexpected output: " + result);
-                return;
-            }
-
-            boolean playing = "Playing".equalsIgnoreCase(parts[1].trim());
-            long pos = (long) Double.parseDouble(parts[2].trim());
-            updateTrack(playing, pos, parts[3].trim(), parts[4].trim());
-        } catch (Exception e) {
-            log("poll failed: " + e);
-        }
-    }
-
-    private static void pollLinux() {
-        if (!playerctlUnavailable && pollPlayerctl()) {
+    public static synchronized void start() {
+        if (running) {
             return;
         }
-        if (!gdbusUnavailable) {
-            pollGdbus();
+        running = true;
+        executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "AirLyrics-MediaTracker");
+            t.setDaemon(true);
+            return t;
+        });
+        executor.scheduleWithFixedDelay(MediaTracker::safePoll, 150L, POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    public static void stop() {
+        running = false;
+        if (executor != null) {
+            executor.shutdownNow();
+            executor = null;
         }
     }
 
-    private static boolean pollPlayerctl() {
-        try {
-            CmdResult res = runCommand(5,
-                "playerctl", "-a", "metadata", "--format",
-                "{{status}}\t{{position}}\t{{title}}\t{{artist}}");
-            if (res == null) {
-                log("playerctl timed out");
-                return true;
-            }
-            if (res.exitCode != 0) {
-                String out = res.joined().toLowerCase(Locale.ROOT);
-                if (out.contains("no player")) {
-                    clearSession("no active media session");
-                    return true;
-                }
-                return false;
-            }
-
-            String[] chosen = null;
-            for (String line : res.lines) {
-                String[] parts = line.split("\t", 4);
-                if (parts.length < 4) continue;
-                String status = parts[0].trim();
-                boolean playing = "Playing".equalsIgnoreCase(status);
-                if (!playing && !"Paused".equalsIgnoreCase(status) && !"Stopped".equalsIgnoreCase(status)) {
-                    continue;
-                }
-
-                boolean hasTitle = !parts[2].trim().isEmpty();
-                if (chosen == null || (chosen[2].trim().isEmpty() && hasTitle)) {
-                    chosen = parts;
-                }
-                if (playing && hasTitle) {
-                    chosen = parts;
-                    break;
-                }
-                if (playing && !"Playing".equalsIgnoreCase(chosen[0].trim())) {
-                    chosen = parts;
-                }
-            }
-
-            if (chosen == null) {
-                clearSession("no active media session");
-                return true;
-            }
-
-            boolean playing = "Playing".equalsIgnoreCase(chosen[0].trim());
-            long posMs = parsePositionUsToMs(chosen[1]);
-            updateTrack(playing, posMs, chosen[2].trim(), chosen[3].trim());
-            return true;
-        } catch (IOException e) {
-            playerctlUnavailable = true;
-            return false;
-        } catch (Exception e) {
-            log("playerctl poll failed: " + e);
-            return false;
+    /**
+     * Requests an immediate background poll (safe to call from render/config threads).
+     */
+    public static void pollAsyncNow() {
+        if (executor != null && !executor.isShutdown()) {
+            executor.execute(MediaTracker::safePoll);
         }
     }
 
-    private static void pollGdbus() {
+    /**
+     * Returns raw estimated playback position in milliseconds based on the most recent OS poll.
+     */
+    public static long getEstimatedPositionMs() {
+        long base = currentPositionMs;
+        if (isPlaying && lastPollTimeMs > 0L) {
+            long elapsed = System.currentTimeMillis() - lastPollTimeMs;
+            if (elapsed > 0L) {
+                base += Math.min(elapsed, 3000L);
+            }
+        }
+        if (currentDurationMs > 0L && base > currentDurationMs) {
+            base = currentDurationMs;
+        }
+        return Math.max(0L, base);
+    }
+
+    private static void safePoll() {
         try {
-            CmdResult listRes = runCommand(5,
-                "gdbus", "call", "--session",
-                "--dest", "org.freedesktop.DBus",
-                "--object-path", "/org/freedesktop/DBus",
-                "--method", "org.freedesktop.DBus.ListNames");
-            if (listRes == null || listRes.exitCode != 0) {
-                clearSession("gdbus session query failed");
-                return;
-            }
+            poll();
+        } catch (Throwable ignored) {
+        }
+    }
 
-            List<String> players = new ArrayList<>();
-            Matcher m = MPRIS_BUS_PATTERN.matcher(listRes.joined());
-            while (m.find()) {
-                players.add(m.group());
-            }
-            if (players.isEmpty()) {
-                clearSession("no active media session");
-                return;
-            }
+    private static void poll() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        MediaSnapshot snap = null;
 
-            List<String> playingBuses = new ArrayList<>();
-            List<String> otherBuses = new ArrayList<>();
-            for (String bus : players) {
-                String statusRaw = gdbusGet(bus, "PlaybackStatus");
-                String status = extractFirstGVariantString(statusRaw);
-                if ("Playing".equalsIgnoreCase(status)) {
-                    playingBuses.add(bus);
+        if (os.contains("win")) {
+            if (!winRtDisabled) {
+                snap = pollWindowsWinRt();
+                if (snap == null) {
+                    winRtFailureCount++;
+                    if (winRtFailureCount >= 8) {
+                        winRtDisabled = true;
+                        closeWinRt();
+                    }
                 } else {
-                    otherBuses.add(bus);
+                    winRtFailureCount = 0;
                 }
             }
-
-            String[] match = pickBestBus(playingBuses);
-            boolean chosenPlaying = match != null;
-            if (match == null) {
-                match = pickBestBus(otherBuses);
+            if (snap == null) {
+                snap = pollWindowsPowerShell();
             }
-            if (match == null) {
-                clearSession("no active media session");
-                return;
+        } else if (os.contains("linux") || os.contains("nix") || os.contains("nux")) {
+            snap = pollLinuxMpris();
+        }
+
+        applySnapshot(snap);
+    }
+
+    private static void applySnapshot(MediaSnapshot snap) {
+        long now = System.currentTimeMillis();
+        if (snap == null || snap.title.isEmpty()) {
+            hasMedia = false;
+            isPlaying = false;
+            currentTitle = "";
+            currentArtist = "";
+            currentAlbum = "";
+            currentPlayer = "";
+            currentPositionMs = 0L;
+            currentDurationMs = 0L;
+            lastPollTimeMs = now;
+            if (!lastTrackKey.isEmpty()) {
+                lastTrackKey = "";
+                LyricsFetcher.clearLyrics();
             }
+            return;
+        }
 
-            String chosenBus = match[0];
-            String chosenTitle = match[1];
-            String chosenArtist = match[2];
+        hasMedia = true;
+        currentTitle = snap.title;
+        currentArtist = snap.artist;
+        currentAlbum = snap.album;
+        currentPlayer = snap.player;
+        currentBackend = snap.backend;
+        currentPositionMs = Math.max(0L, snap.positionMs);
+        currentDurationMs = Math.max(0L, snap.durationMs);
+        isPlaying = snap.playing;
+        lastPollTimeMs = now;
 
-            long posMs = 0L;
-            String posRaw = gdbusGet(chosenBus, "Position");
-            if (posRaw != null) {
-                Matcher pm = GVARIANT_INT_PATTERN.matcher(posRaw);
-                if (pm.find()) {
-                    posMs = parsePositionUsToMs(pm.group(1));
-                }
-            }
+        if (snap.playing && !snap.player.isEmpty()) {
+            lastActivePlayer = snap.player;
+        }
 
-            updateTrack(chosenPlaying, posMs, chosenTitle.trim(), chosenArtist.trim());
-        } catch (IOException e) {
-            gdbusUnavailable = true;
-            clearSession("neither playerctl nor gdbus is available on PATH");
-        } catch (Exception e) {
-            log("gdbus poll failed: " + e);
+        String newKey = snap.artist + "\u0000" + snap.title;
+        if (!newKey.equals(lastTrackKey)) {
+            lastTrackKey = newKey;
+            LyricsFetcher.onTrackChanged(snap.title, snap.artist, snap.durationMs);
         }
     }
 
-    private static String[] pickBestBus(List<String> buses) throws IOException, InterruptedException {
-        String[] best = null;
-        for (String bus : buses) {
-            String[] meta = parseMprisMetadata(gdbusGet(bus, "Metadata"));
-            if (best == null || (best[1].isEmpty() && !meta[0].isEmpty())) {
-                best = new String[]{bus, meta[0], meta[1]};
-            }
-            if (!best[1].isEmpty()) break;
-        }
-        return best;
-    }
-
-    private static String gdbusGet(String bus, String property) throws IOException, InterruptedException {
-        CmdResult res = runCommand(4,
-            "gdbus", "call", "--session",
-            "--dest", bus,
-            "--object-path", "/org/mpris/MediaPlayer2",
-            "--method", "org.freedesktop.DBus.Properties.Get",
-            "org.mpris.MediaPlayer2.Player", property);
-        if (res == null || res.exitCode != 0) return null;
-        return res.joined();
-    }
-
-    private static CmdResult runCommand(long timeoutSec, String... cmd) throws IOException, InterruptedException {
-        Process p = null;
+    private static MediaSnapshot pollWindowsWinRt() {
         try {
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            p = pb.start();
-            p.getOutputStream().close();
+            if (winRtMedia == null) {
+                winRtMedia = new WinRtMedia();
+            }
+            MediaSnapshot snap = winRtMedia.poll(lastActivePlayer);
+            if (snap == null) {
+                return MediaSnapshot.EMPTY;
+            }
+            return snap;
+        } catch (Throwable t) {
+            closeWinRt();
+            return null;
+        }
+    }
 
-            if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-                p.destroyForcibly();
+    private static void closeWinRt() {
+        if (winRtMedia != null) {
+            try {
+                winRtMedia.close();
+            } catch (Throwable ignored) {
+            }
+            winRtMedia = null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Direct WinRT COM GSMTC implementation (JNA 3.4.0 compatible)
+    // -------------------------------------------------------------------------
+
+    private interface CombaseLibrary extends Library {
+        int RoInitialize(int initType);
+
+        int RoGetActivationFactory(Pointer activatableClassId, Pointer iid, PointerByReference factory);
+
+        int WindowsCreateString(WString sourceString, int length, PointerByReference string);
+
+        int WindowsDeleteString(Pointer string);
+
+        Pointer WindowsGetStringRawBuffer(Pointer string, IntByReference length);
+    }
+
+    private static final class WinRtMedia implements AutoCloseable {
+        private static final int RO_INIT_MULTITHREADED = 1;
+        private static final int RPC_E_CHANGED_MODE = 0x80010106;
+        private static final String MANAGER_CLASS = "Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager";
+        private static final Memory IID_MANAGER_STATICS = parseGuid("2050c4ee-11a0-57de-aed7-c97c70338245");
+        private static final Memory IID_ASYNC_INFO = parseGuid("00000036-0000-0000-c000-000000000046");
+
+        private final CombaseLibrary combase;
+        private Com manager;
+
+        WinRtMedia() {
+            this.combase = (CombaseLibrary) Native.loadLibrary("combase", CombaseLibrary.class);
+            int hr = combase.RoInitialize(RO_INIT_MULTITHREADED);
+            if (hr < 0 && hr != RPC_E_CHANGED_MODE) {
+                throw new IllegalStateException("RoInitialize failed: 0x" + Integer.toHexString(hr));
+            }
+            this.manager = acquireManager();
+        }
+
+        private Com acquireManager() {
+            try (HString classId = new HString(combase, MANAGER_CLASS)) {
+                PointerByReference factoryRef = new PointerByReference();
+                int hr = combase.RoGetActivationFactory(classId.ptr, IID_MANAGER_STATICS, factoryRef);
+                checkHr(hr, "RoGetActivationFactory");
+                try (Com factory = new Com(combase, factoryRef.getValue());
+                     Com op = factory.child(6)) {
+                    if (op == null) {
+                        throw new IllegalStateException("RequestAsync returned null");
+                    }
+                    Com mgr = op.awaitAsync(IID_ASYNC_INFO, 2000L);
+                    if (mgr == null) {
+                        throw new IllegalStateException("SessionManager RequestAsync failed");
+                    }
+                    return mgr;
+                }
+            }
+        }
+
+        MediaSnapshot poll(String preferredPlayer) {
+            if (manager == null) {
+                manager = acquireManager();
+            }
+            Com sessions;
+            try {
+                sessions = manager.child(7);
+            } catch (RuntimeException ex) {
+                manager.close();
+                manager = acquireManager();
+                sessions = manager.child(7);
+            }
+            if (sessions == null) {
                 return null;
             }
 
-            List<String> lines = new ArrayList<>();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("\uFEFF")) line = line.substring(1);
-                    lines.add(line);
+            try (Com list = sessions) {
+                int count = list.getInt(7);
+                if (count <= 0) {
+                    return null;
                 }
-            }
-            return new CmdResult(p.exitValue(), lines);
-        } finally {
-            if (p != null && p.isAlive()) p.destroyForcibly();
-        }
-    }
 
-    private static long parsePositionUsToMs(String raw) {
-        String s = raw == null ? "" : raw.trim();
-        if (s.isEmpty()) return 0L;
-        try {
-            return Math.max(0L, (long) (Double.parseDouble(s) / 1000.0));
-        } catch (NumberFormatException e) {
-            return 0L;
-        }
-    }
+                MediaSnapshot bestPlayingPreferred = null;
+                MediaSnapshot bestPlaying = null;
+                MediaSnapshot bestPausedPreferred = null;
+                MediaSnapshot bestPaused = null;
+                long nowMs = System.currentTimeMillis();
 
-    private static String extractFirstGVariantString(String raw) {
-        if (raw == null) return "";
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            if (c == '\'' || c == '"') {
-                StringBuilder sb = new StringBuilder();
-                readGVariantString(raw, i, sb);
-                return sb.toString();
-            }
-        }
-        return "";
-    }
-
-    private static String[] parseMprisMetadata(String raw) {
-        String title = "";
-        String artist = "";
-        if (raw == null || raw.isEmpty()) return new String[]{title, artist};
-
-        int n = raw.length();
-        int i = 0;
-        while (i < n) {
-            char ch = raw.charAt(i);
-            if (ch != '\'' && ch != '"') {
-                i++;
-                continue;
-            }
-
-            StringBuilder keyBuf = new StringBuilder();
-            i = readGVariantString(raw, i, keyBuf);
-            String key = keyBuf.toString();
-
-            int j = skipSpaces(raw, i);
-            if (j >= n || raw.charAt(j) != ':') continue;
-            j = skipSpaces(raw, j + 1);
-            if (j < n && raw.charAt(j) == '<') {
-                j = skipSpaces(raw, j + 1);
-            }
-
-            if ("xesam:title".equals(key)) {
-                if (j < n && (raw.charAt(j) == '\'' || raw.charAt(j) == '"')) {
-                    StringBuilder val = new StringBuilder();
-                    i = readGVariantString(raw, j, val);
-                    title = val.toString();
-                }
-            } else if ("xesam:artist".equals(key)) {
-                if (j < n && raw.charAt(j) == '[') {
-                    List<String> artists = new ArrayList<>();
-                    j++;
-                    while (j < n) {
-                        j = skipSpaces(raw, j);
-                        if (j >= n) break;
-                        char cur = raw.charAt(j);
-                        if (cur == ']') {
-                            j++;
-                            break;
+                for (int i = 0; i < count; i++) {
+                    try (Com session = list.childAt(6, i)) {
+                        if (session == null) {
+                            continue;
                         }
-                        if (cur == '\'' || cur == '"') {
-                            StringBuilder item = new StringBuilder();
-                            j = readGVariantString(raw, j, item);
-                            String s = item.toString().trim();
-                            if (!s.isEmpty()) artists.add(s);
+                        MediaSnapshot snap = readSession(session, nowMs);
+                        if (snap == null || snap.title.isEmpty()) {
+                            continue;
+                        }
+                        boolean matchesPreferred = !preferredPlayer.isEmpty()
+                                && preferredPlayer.equalsIgnoreCase(snap.player);
+                        if (snap.playing) {
+                            if (matchesPreferred && bestPlayingPreferred == null) {
+                                bestPlayingPreferred = snap;
+                            } else if (bestPlaying == null) {
+                                bestPlaying = snap;
+                            }
                         } else {
-                            j++;
+                            if (matchesPreferred && bestPausedPreferred == null) {
+                                bestPausedPreferred = snap;
+                            } else if (bestPaused == null) {
+                                bestPaused = snap;
+                            }
                         }
                     }
-                    artist = String.join(", ", artists);
-                    i = j;
-                } else if (j < n && (raw.charAt(j) == '\'' || raw.charAt(j) == '"')) {
-                    StringBuilder val = new StringBuilder();
-                    i = readGVariantString(raw, j, val);
-                    artist = val.toString();
                 }
+
+                if (bestPlayingPreferred != null) {
+                    return bestPlayingPreferred;
+                }
+                if (bestPlaying != null) {
+                    return bestPlaying;
+                }
+                if (bestPausedPreferred != null) {
+                    return bestPausedPreferred;
+                }
+                return bestPaused;
             }
         }
-        return new String[]{title, artist};
-    }
 
-    private static int skipSpaces(String s, int i) {
-        while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
-        return i;
-    }
+        private MediaSnapshot readSession(Com session, long nowMs) {
+            String player = "";
+            try {
+                player = safeTrim(session.getString(6));
+            } catch (Throwable ignored) {
+            }
 
-    private static int readGVariantString(String s, int start, StringBuilder out) {
-        char quote = s.charAt(start);
-        int i = start + 1;
-        int n = s.length();
-        while (i < n) {
-            char c = s.charAt(i++);
-            if (c == quote) return i;
-            if (c == '\\' && i < n) {
-                char esc = s.charAt(i++);
-                switch (esc) {
-                    case 'n': out.append('\n'); break;
-                    case 'r': out.append('\r'); break;
-                    case 't': out.append('\t'); break;
-                    case 'u':
-                        if (i + 4 <= n) {
-                            try {
-                                out.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
-                                i += 4;
-                                break;
-                            } catch (NumberFormatException ignored) {}
+            boolean playing = false;
+            try (Com playback = session.child(9)) {
+                if (playback != null) {
+                    playing = (playback.getInt(7) == 4);
+                }
+            } catch (Throwable ignored) {
+            }
+
+            String title = "";
+            String artist = "";
+            String album = "";
+            try (Com op = session.child(7);
+                 Com props = op != null ? op.awaitAsync(IID_ASYNC_INFO, 1200L) : null) {
+                if (props != null) {
+                    title = safeTrim(props.getString(6));
+                    artist = safeTrim(props.getString(9));
+                    album = safeTrim(props.getString(10));
+                }
+            } catch (Throwable ignored) {
+            }
+
+            if (title.isEmpty()) {
+                return null;
+            }
+
+            long posMs = 0L;
+            long durationMs = 0L;
+            try (Com timeline = session.child(8)) {
+                if (timeline != null) {
+                    long startTicks = timeline.getLong(6);
+                    long endTicks = timeline.getLong(7);
+                    long posTicks = timeline.getLong(10);
+                    long lastUpdatedFiletime = timeline.getLong(11);
+
+                    durationMs = Math.max(0L, (endTicks - startTicks) / 10000L);
+                    posMs = Math.max(0L, (posTicks - startTicks) / 10000L);
+
+                    if (playing && lastUpdatedFiletime > 0L) {
+                        long updatedUnixMs = lastUpdatedFiletime / 10000L - FILETIME_UNIX_EPOCH_MS;
+                        long ageMs = nowMs - updatedUnixMs;
+                        if (ageMs >= 1L && ageMs < 86400000L) {
+                            posMs += ageMs;
                         }
-                        out.append('u');
-                        break;
-                    default: out.append(esc); break;
+                    }
+                    if (durationMs > 0L && posMs > durationMs) {
+                        posMs = durationMs;
+                    }
                 }
-            } else {
-                out.append(c);
+            } catch (Throwable ignored) {
+            }
+
+            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM");
+        }
+
+        @Override
+        public void close() {
+            if (manager != null) {
+                manager.close();
+                manager = null;
             }
         }
-        return n;
-    }
 
-    private static class CmdResult {
-        final int exitCode;
-        final List<String> lines;
-
-        CmdResult(int exitCode, List<String> lines) {
-            this.exitCode = exitCode;
-            this.lines = lines;
+        private static Memory parseGuid(String guid) {
+            String hex = guid.replace("-", "");
+            if (hex.length() != 32) {
+                throw new IllegalArgumentException("Invalid GUID: " + guid);
+            }
+            Memory mem = new Memory(16L);
+            mem.setInt(0L, (int) Long.parseLong(hex.substring(0, 8), 16));
+            mem.setShort(4L, (short) Integer.parseInt(hex.substring(8, 12), 16));
+            mem.setShort(6L, (short) Integer.parseInt(hex.substring(12, 16), 16));
+            for (int i = 0; i < 8; i++) {
+                int idx = 16 + i * 2;
+                mem.setByte(8L + i, (byte) Integer.parseInt(hex.substring(idx, idx + 2), 16));
+            }
+            return mem;
         }
 
-        String joined() {
-            return String.join("\n", lines);
+        private static void checkHr(int hr, String name) {
+            if (hr < 0) {
+                throw new IllegalStateException(name + " failed: 0x" + Integer.toHexString(hr));
+            }
+        }
+    }
+
+    private static final class HString implements AutoCloseable {
+        private final CombaseLibrary combase;
+        final Pointer ptr;
+
+        HString(CombaseLibrary combase, String value) {
+            this.combase = combase;
+            PointerByReference ref = new PointerByReference();
+            int hr = combase.WindowsCreateString(new WString(value), value.length(), ref);
+            WinRtMedia.checkHr(hr, "WindowsCreateString");
+            this.ptr = ref.getValue();
+        }
+
+        @Override
+        public void close() {
+            if (ptr != null) {
+                try {
+                    combase.WindowsDeleteString(ptr);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    private static final class Com implements AutoCloseable {
+        private final CombaseLibrary combase;
+        private final Pointer ptr;
+        private boolean closed = false;
+
+        Com(CombaseLibrary combase, Pointer ptr) {
+            this.combase = combase;
+            this.ptr = ptr;
+        }
+
+        private int invoke(int slot, Object... extraArgs) {
+            Pointer vtable = ptr.getPointer(0L);
+            Pointer fnPtr = vtable.getPointer((long) slot * Native.POINTER_SIZE);
+            Object[] args = new Object[1 + extraArgs.length];
+            args[0] = ptr;
+            System.arraycopy(extraArgs, 0, args, 1, extraArgs.length);
+            return Function.getFunction(fnPtr).invokeInt(args);
+        }
+
+        Pointer queryInterface(Memory iid) {
+            PointerByReference out = new PointerByReference();
+            int hr = invoke(0, iid, out);
+            WinRtMedia.checkHr(hr, "QueryInterface");
+            return out.getValue();
+        }
+
+        Com child(int slot) {
+            PointerByReference out = new PointerByReference();
+            int hr = invoke(slot, out);
+            WinRtMedia.checkHr(hr, "COM.child(" + slot + ")");
+            Pointer childPtr = out.getValue();
+            return childPtr != null ? new Com(combase, childPtr) : null;
+        }
+
+        Com childAt(int slot, int index) {
+            PointerByReference out = new PointerByReference();
+            int hr = invoke(slot, index, out);
+            WinRtMedia.checkHr(hr, "COM.childAt(" + slot + ")");
+            Pointer childPtr = out.getValue();
+            return childPtr != null ? new Com(combase, childPtr) : null;
+        }
+
+        int getInt(int slot) {
+            IntByReference out = new IntByReference();
+            int hr = invoke(slot, out);
+            WinRtMedia.checkHr(hr, "COM.getInt(" + slot + ")");
+            return out.getValue();
+        }
+
+        long getLong(int slot) {
+            LongByReference out = new LongByReference();
+            int hr = invoke(slot, out);
+            WinRtMedia.checkHr(hr, "COM.getLong(" + slot + ")");
+            return out.getValue();
+        }
+
+        String getString(int slot) {
+            PointerByReference out = new PointerByReference();
+            int hr = invoke(slot, out);
+            WinRtMedia.checkHr(hr, "COM.getString(" + slot + ")");
+            Pointer hstr = out.getValue();
+            if (hstr == null) {
+                return "";
+            }
+            try {
+                IntByReference lenRef = new IntByReference();
+                Pointer buf = combase.WindowsGetStringRawBuffer(hstr, lenRef);
+                int len = lenRef.getValue();
+                if (buf == null || len <= 0) {
+                    return "";
+                }
+                return new String(buf.getCharArray(0L, len));
+            } finally {
+                combase.WindowsDeleteString(hstr);
+            }
+        }
+
+        Com awaitAsync(Memory iidAsyncInfo, long timeoutMs) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            int status;
+            try (Com asyncInfo = new Com(combase, queryInterface(iidAsyncInfo))) {
+                status = asyncInfo.getInt(7);
+                while (status == 0 && System.currentTimeMillis() < deadline) {
+                    try {
+                        Thread.sleep(2L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                    status = asyncInfo.getInt(7);
+                }
+            }
+            if (status != 1) {
+                return null;
+            }
+            return child(8);
+        }
+
+        @Override
+        public void close() {
+            if (!closed && ptr != null) {
+                closed = true;
+                try {
+                    invoke(2);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Windows PowerShell fallback
+    // -------------------------------------------------------------------------
+
+    private static MediaSnapshot pollWindowsPowerShell() {
+        try {
+            String psCommand = "$ErrorActionPreference='SilentlyContinue';"
+                    + "Add-Type -AssemblyName System.Runtime.WindowsRuntime;"
+                    + "$asTask=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask'-and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0];"
+                    + "function Aw($op,$t){$net=$asTask.MakeGenericMethod($t);$tsk=$net.Invoke($null,@($op));$tsk.Wait(1500)|Out-Null;$tsk.Result};"
+                    + "$mgr=Aw ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media.Control,ContentType=WindowsRuntime]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media.Control,ContentType=WindowsRuntime]);"
+                    + "$sessions=$mgr.GetSessions();"
+                    + "$s=$sessions|?{$_.GetPlaybackInfo().PlaybackStatus -eq 'Playing'}|Select -First 1;"
+                    + "if(-not $s){$s=$mgr.GetCurrentSession()};"
+                    + "if($s){"
+                    + "$p=Aw ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties,Windows.Media.Control,ContentType=WindowsRuntime]);"
+                    + "$tl=$s.GetTimelineProperties();"
+                    + "$pb=$s.GetPlaybackInfo();"
+                    + "$dur=[Math]::Max(0,[long]($tl.EndTime-$tl.StartTime).TotalMilliseconds);"
+                    + "$pos=[Math]::Max(0,[long]($tl.Position-$tl.StartTime).TotalMilliseconds);"
+                    + "if($pb.PlaybackStatus -eq 'Playing' -and $tl.LastUpdatedTime){"
+                    + "$age=([DateTimeOffset]::UtcNow - $tl.LastUpdatedTime).TotalMilliseconds;"
+                    + "if($age -ge 1 -and $age -lt 86400000){$pos+=[long]$age}"
+                    + "};"
+                    + "if($dur -gt 0 -and $pos -gt $dur){$pos=$dur};"
+                    + "Write-Output ('T=' + ($p.Title -replace '[\\r\\n]',' '));"
+                    + "Write-Output ('A=' + ($p.Artist -replace '[\\r\\n]',' '));"
+                    + "Write-Output ('B=' + ($p.AlbumTitle -replace '[\\r\\n]',' '));"
+                    + "Write-Output ('P=' + $pos);"
+                    + "Write-Output ('D=' + $dur);"
+                    + "Write-Output ('S=' + $pb.PlaybackStatus);"
+                    + "Write-Output ('L=' + ($s.SourceAppUserModelId -replace '[\\r\\n]',' '))"
+                    + "}";
+
+            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    out.append(line).append('\n');
+                }
+            }
+            process.waitFor(2500L, TimeUnit.MILLISECONDS);
+            String result = out.toString().trim();
+            if (result.isEmpty()) {
+                return MediaSnapshot.EMPTY;
+            }
+
+            String title = "";
+            String artist = "";
+            String album = "";
+            String player = "";
+            long pos = 0L;
+            long dur = 0L;
+            boolean playing = false;
+
+            for (String line : result.split("\n")) {
+                if (line.startsWith("T=")) {
+                    title = line.substring(2).trim();
+                } else if (line.startsWith("A=")) {
+                    artist = line.substring(2).trim();
+                } else if (line.startsWith("B=")) {
+                    album = line.substring(2).trim();
+                } else if (line.startsWith("P=")) {
+                    pos = parseLongSafe(line.substring(2).trim(), 0L);
+                } else if (line.startsWith("D=")) {
+                    dur = parseLongSafe(line.substring(2).trim(), 0L);
+                } else if (line.startsWith("S=")) {
+                    playing = "Playing".equalsIgnoreCase(line.substring(2).trim());
+                } else if (line.startsWith("L=")) {
+                    player = line.substring(2).trim();
+                }
+            }
+
+            return title.isEmpty()
+                    ? MediaSnapshot.EMPTY
+                    : new MediaSnapshot(title, artist, album, pos, dur, playing, player, "WinRT-PS");
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Linux MPRIS (playerctl / gdbus)
+    // -------------------------------------------------------------------------
+
+    private static MediaSnapshot pollLinuxMpris() {
+        MediaSnapshot snap = tryPlayerctl();
+        if (snap != null) {
+            return snap;
+        }
+        return tryGdbus();
+    }
+
+    private static MediaSnapshot tryPlayerctl() {
+        try {
+            String fmt = "{{status}}\t{{title}}\t{{artist}}\t{{album}}\t{{position}}\t{{mpris:length}}\t{{playerName}}";
+            Process process = new ProcessBuilder("playerctl", "metadata", "--format", fmt).start();
+            String output = readAll(process);
+            int code = process.waitFor();
+            if (code != 0 || output.trim().isEmpty()) {
+                return null;
+            }
+            String[] parts = output.trim().split("\t", -1);
+            if (parts.length < 7) {
+                return null;
+            }
+            boolean playing = "Playing".equalsIgnoreCase(parts[0].trim());
+            String title = parts[1].trim();
+            String artist = parts[2].trim();
+            String album = parts[3].trim();
+            long posUs = parseLongSafe(parts[4].trim(), 0L);
+            long lenUs = parseLongSafe(parts[5].trim(), 0L);
+            String player = parts[6].trim();
+            if (title.isEmpty()) {
+                return MediaSnapshot.EMPTY;
+            }
+            return new MediaSnapshot(title, artist, album, posUs / 1000L, lenUs / 1000L, playing, player, "playerctl");
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static MediaSnapshot tryGdbus() {
+        try {
+            Process busProc = new ProcessBuilder("dbus-send", "--session", "--dest=org.freedesktop.DBus",
+                    "--type=method_call", "--print-reply", "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus.ListNames").start();
+            String busOut = readAll(busProc);
+            if (busProc.waitFor() != 0) {
+                return null;
+            }
+
+            Matcher matcher = Pattern.compile("\"(org\\.mpris\\.MediaPlayer2\\.[^\"]+)\"").matcher(busOut);
+            String target = null;
+            String firstFound = null;
+            while (matcher.find()) {
+                String name = matcher.group(1);
+                if (firstFound == null) {
+                    firstFound = name;
+                }
+                if (name.contains("spotify") || name.contains("vlc") || name.contains("chromium") || name.contains("firefox")) {
+                    target = name;
+                    break;
+                }
+            }
+            if (target == null) {
+                target = firstFound;
+            }
+            if (target == null) {
+                return MediaSnapshot.EMPTY;
+            }
+
+            Process pMeta = new ProcessBuilder("gdbus", "call", "--session", "--dest", target,
+                    "--object-path", "/org/mpris/MediaPlayer2", "--method", "org.freedesktop.DBus.Properties.GetAll",
+                    "org.mpris.MediaPlayer2.Player").start();
+            String metaOut = readAll(pMeta);
+            if (pMeta.waitFor() != 0) {
+                return null;
+            }
+
+            boolean playing = metaOut.contains("'PlaybackStatus': <'Playing'>");
+            String title = extractGdbusString(metaOut, "xesam:title");
+            String artist = extractGdbusArrayFirst(metaOut, "xesam:artist");
+            String album = extractGdbusString(metaOut, "xesam:album");
+            long posUs = extractGdbusNumber(metaOut, "'Position': <(?:int64 )?(\\d+)>");
+            long lenUs = extractGdbusNumber(metaOut, "'mpris:length': <(?:uint64 |int64 )?(\\d+)>");
+
+            if (title.isEmpty()) {
+                return MediaSnapshot.EMPTY;
+            }
+            return new MediaSnapshot(title, artist, album, posUs / 1000L, lenUs / 1000L, playing, target, "gdbus");
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String extractGdbusString(String haystack, String key) {
+        Matcher m = Pattern.compile("'" + Pattern.quote(key) + "':\\s*<'([^']*)'>").matcher(haystack);
+        return m.find() ? m.group(1).trim() : "";
+    }
+
+    private static String extractGdbusArrayFirst(String haystack, String key) {
+        Matcher m = Pattern.compile("'" + Pattern.quote(key) + "':\\s*<\\['([^']*)'").matcher(haystack);
+        return m.find() ? m.group(1).trim() : "";
+    }
+
+    private static long extractGdbusNumber(String haystack, String regex) {
+        Matcher m = Pattern.compile(regex).matcher(haystack);
+        return m.find() ? parseLongSafe(m.group(1), 0L) : 0L;
+    }
+
+    private static String readAll(Process p) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(line);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static long parseLongSafe(String s, long fallback) {
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static String safeTrim(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    private static final class MediaSnapshot {
+        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None");
+
+        final String title;
+        final String artist;
+        final String album;
+        final long positionMs;
+        final long durationMs;
+        final boolean playing;
+        final String player;
+        final String backend;
+
+        MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
+                      boolean playing, String player, String backend) {
+            this.title = title;
+            this.artist = artist;
+            this.album = album;
+            this.positionMs = positionMs;
+            this.durationMs = durationMs;
+            this.playing = playing;
+            this.player = player;
+            this.backend = backend;
         }
     }
 }

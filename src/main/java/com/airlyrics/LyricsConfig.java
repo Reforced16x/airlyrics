@@ -16,8 +16,15 @@ public class LyricsConfig {
     public static boolean scatterLayout = true;
     public static boolean uppercase = false;
     public static float scalePercent = 100.0f;
+    public static float opacityPercent = 100.0f;
+    public static boolean importantLyricsLarger = true;
+    public static boolean glowEnabled = true;
+    public static float glowIntensityPercent = 100.0f;
+    public static boolean estimateWordTimings = true;
     public static boolean rainbowPastel = true;
     public static int primaryColor = 0x55FFFF;
+    public static float hudX = -1.0f;
+    public static float hudY = -1.0f;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final File CONFIG_FILE = new File("config/airlyrics.json");
@@ -26,7 +33,24 @@ public class LyricsConfig {
         apply(new ConfigData());
     }
 
+    public static void clampAll() {
+        syncOffsetMs = Math.max(-2000, Math.min(2000, syncOffsetMs));
+        scalePercent = Math.max(50.0f, Math.min(250.0f, scalePercent));
+        opacityPercent = Math.max(10.0f, Math.min(100.0f, opacityPercent));
+        glowIntensityPercent = Math.max(25.0f, Math.min(200.0f, glowIntensityPercent));
+    }
+
+    public static float getOpacityAlpha() {
+        return Math.max(0.10f, Math.min(1.0f, opacityPercent / 100.0f));
+    }
+
+    public static float getGlowFactor() {
+        if (!glowEnabled) return 0.0f;
+        return Math.max(0.0f, Math.min(2.0f, glowIntensityPercent / 100.0f));
+    }
+
     public static void save() {
+        clampAll();
         try {
             File parent = CONFIG_FILE.getParentFile();
             if (parent != null) parent.mkdirs();
@@ -35,7 +59,23 @@ public class LyricsConfig {
             try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
                 GSON.toJson(data, writer);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
+        OneConfigCompat.syncFromCore();
+    }
+
+    public static void saveQuiet() {
+        clampAll();
+        try {
+            File parent = CONFIG_FILE.getParentFile();
+            if (parent != null) parent.mkdirs();
+
+            ConfigData data = snapshot();
+            try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
+                GSON.toJson(data, writer);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     public static void load() {
@@ -45,8 +85,12 @@ public class LyricsConfig {
         }
         try (FileReader reader = new FileReader(CONFIG_FILE)) {
             ConfigData data = GSON.fromJson(reader, ConfigData.class);
-            if (data != null) apply(data);
-        } catch (Exception ignored) {}
+            if (data != null) {
+                apply(data);
+            }
+        } catch (Exception ignored) {
+        }
+        clampAll();
     }
 
     private static ConfigData snapshot() {
@@ -59,8 +103,15 @@ public class LyricsConfig {
         d.scatterLayout = scatterLayout;
         d.uppercase = uppercase;
         d.scalePercent = scalePercent;
+        d.opacityPercent = opacityPercent;
+        d.importantLyricsLarger = importantLyricsLarger;
+        d.glowEnabled = glowEnabled;
+        d.glowIntensityPercent = glowIntensityPercent;
+        d.estimateWordTimings = estimateWordTimings;
         d.rainbowPastel = rainbowPastel;
         d.primaryColor = primaryColor;
+        d.hudX = hudX;
+        d.hudY = hudY;
         return d;
     }
 
@@ -73,8 +124,16 @@ public class LyricsConfig {
         scatterLayout = d.scatterLayout;
         uppercase = d.uppercase;
         scalePercent = d.scalePercent;
+        opacityPercent = d.opacityPercent;
+        importantLyricsLarger = d.importantLyricsLarger;
+        glowEnabled = d.glowEnabled;
+        glowIntensityPercent = d.glowIntensityPercent;
+        estimateWordTimings = d.estimateWordTimings;
         rainbowPastel = d.rainbowPastel;
         primaryColor = d.primaryColor;
+        hudX = d.hudX;
+        hudY = d.hudY;
+        clampAll();
     }
 
     private static class ConfigData {
@@ -86,7 +145,14 @@ public class LyricsConfig {
         boolean scatterLayout = true;
         boolean uppercase = false;
         float scalePercent = 100.0f;
+        float opacityPercent = 100.0f;
+        boolean importantLyricsLarger = true;
+        boolean glowEnabled = true;
+        float glowIntensityPercent = 100.0f;
+        boolean estimateWordTimings = true;
         boolean rainbowPastel = true;
         int primaryColor = 0x55FFFF;
+        float hudX = -1.0f;
+        float hudY = -1.0f;
     }
 }

@@ -28,6 +28,14 @@ repositories {
         name = 'Fabric'
         url = 'https://maven.fabricmc.net/'
     }
+    maven {
+        name = 'Polyfrost'
+        url = 'https://repo.polyfrost.org/releases'
+    }
+    maven {
+        name = 'Polyfrost Snapshots'
+        url = 'https://repo.polyfrost.org/snapshots'
+    }
     mavenCentral()
 }
 
@@ -40,6 +48,19 @@ dependencies {
     mappings ploceus.featherMappings(project.feather_build)
 
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+    if (file('.oneconfig-api').exists()) {
+        compileOnly fileTree(dir: '.oneconfig-api', include: '*.jar')
+    } else {
+        compileOnly "org.polyfrost.oneconfig:config:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:config-impl:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:hud:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:ui:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:poly-compose:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:events:1.7.1"
+        compileOnly "org.polyfrost.oneconfig:utils:1.7.1"
+    }
+    compileOnly "net.java.dev.jna:jna:3.4.0"
 }
 
 processResources {
@@ -51,7 +72,6 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
     it.options.encoding = "UTF-8"
-    it.options.release = 8
 }
 
 java {

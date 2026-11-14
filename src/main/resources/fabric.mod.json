@@ -3,7 +3,7 @@
   "id": "airlyrics",
   "version": "${version}",
   "name": "AirLyrics",
-  "description": "Floating 3D world and HUD karaoke lyrics synced to Spotify and desktop media players on Windows and Linux for Minecraft 1.8.9 (Ornithe / OneClient).",
+  "description": "Floating 3D world and HUD karaoke lyrics synced accurately to desktop media players on Windows and Linux for Minecraft 1.8.9 (Ornithe / OneConfig).",
   "authors": [
     "Reforced"
   ],
@@ -15,11 +15,19 @@
   "license": "MIT",
   "icon": "assets/airlyrics/icon.png",
   "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.airlyrics.AirLyricsMod"
+    ]
+  },
   "mixins": [
     "airlyrics.mixins.json"
   ],
   "depends": {
     "fabricloader": ">=0.15.0",
     "minecraft": "1.8.9"
+  },
+  "suggests": {
+    "oneconfigv1": ">=1.6.0"
   }
 }
