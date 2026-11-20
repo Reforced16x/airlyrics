@@ -108,8 +108,10 @@ public class LyricsGuiScreen extends Screen {
             this.buttons.add(new ButtonWidget(14, leftCol + 78, rowY + step * 6, 74, 20, "Sync +50ms"));
             this.buttons.add(new ButtonWidget(15, rightCol, rowY + step * 6, 152, 20, "Reset Defaults"));
         } else {
-            this.buttons.add(new ButtonWidget(20, leftCol, rowY, 312, 20,
-                    "Font Style: " + LyricsConfig.getFontOptionName()));
+            this.buttons.add(new ButtonWidget(20, leftCol, rowY, 152, 20,
+                    "Font: " + LyricsConfig.getFontOptionName()));
+            this.buttons.add(new ButtonWidget(28, rightCol, rowY, 152, 20,
+                    "Cover Grad: " + onOff(LyricsConfig.thumbnailGradient)));
 
             this.buttons.add(new ButtonWidget(21, leftCol, rowY + step, 152, 20,
                     "Glow: " + onOff(LyricsConfig.glowEnabled)));
@@ -231,6 +233,9 @@ public class LyricsGuiScreen extends Screen {
                 break;
             case 27:
                 LyricsConfig.worldAppleStyle = !LyricsConfig.worldAppleStyle;
+                break;
+            case 28:
+                LyricsConfig.thumbnailGradient = !LyricsConfig.thumbnailGradient;
                 break;
             case 29:
                 LyricsConfig.rainbowPastel = !LyricsConfig.rainbowPastel;

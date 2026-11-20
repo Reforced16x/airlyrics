@@ -14,7 +14,8 @@ A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time s
 - **Apple Lyrics Style & World Apple Effect (`appleStyle`, `worldAppleStyle`):** Toggle a frosted rounded Apple Music-style rolling lyrics card on the HUD, and apply the progressive karaoke sub-glyph wipe, spring swell, and bounce directly to 3D floating in-world lyrics.
 - **Sky Line-by-Line Lyrics (`skyLyrics`):** Display a large, yaw-following karaoke marquee high in the sky dome (`15°`–`72°` elevation, `60%`–`300%` scale) with progressive wipe fill and context lines.
 - **Font Selector (`fontIndex`):** Switch seamlessly across HUD, 3D World, and Sky between vanilla **Minecraft**, **Clean Sans**, **Sans Bold**, **Rounded UI**, **Editorial Serif**, and **JetBrains / Mono** anti-aliased glyph atlases.
-- **Smooth Per-Glyph Glow, Gradients & Moving Gradients:** Hardware linear-filtered per-character radial glow coherently matched to static and moving per-character gradients (no shadow punch-through, compatible with shaders).
+- **Song Thumbnail Gradient (`thumbnailGradient`, ON by default):** Automatically reads the playing song's cover art thumbnail (via Windows GSMTC, Linux MPRIS, or album artwork lookup) and extracts a two-stop vivid gradient with smooth crossfading across tracks.
+- **Smooth Per-Glyph Glow, Gradients & Moving Gradients:** Hardware linear-filtered per-character radial glow coherently matched to static, moving, or cover-art per-character gradients (no shadow punch-through, compatible with shaders).
 - **Opacity Setting:** Configurable opacity (`10%`–`100%`) applied cleanly across world words, sky marquee, HUD cards, and glow halos.
 
 ## Requirements

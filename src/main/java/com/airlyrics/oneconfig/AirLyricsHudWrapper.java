@@ -15,7 +15,7 @@ import java.util.List;
 public final class AirLyricsHudWrapper implements OneConfigHudWrapper {
     private static final String[] LINKED_KEYS = {
         "enabled", "onScreen", "appleStyle", "fontIndex", "scalePercent", "opacityPercent",
-        "glowEnabled", "glowIntensityPercent", "gradientEnabled", "movingGradient",
+        "glowEnabled", "glowIntensityPercent", "thumbnailGradient", "gradientEnabled", "movingGradient",
         "gradientColorStart", "gradientColorEnd", "gradientSpeedPercent",
         "rainbowPastel", "primaryColor", "uppercase"
     };

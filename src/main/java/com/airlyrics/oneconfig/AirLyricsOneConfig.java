@@ -166,6 +166,14 @@ public final class AirLyricsOneConfig extends Config {
     public float glowIntensityPercent = LyricsConfig.glowIntensityPercent;
 
     @Switch(
+        title = "Song Thumbnail Gradient",
+        description = "Automatically extract a text color gradient from the song's cover art.",
+        category = "Typography & Glow",
+        subcategory = "Gradients"
+    )
+    public boolean thumbnailGradient = LyricsConfig.thumbnailGradient;
+
+    @Switch(
         title = "Gradient Colors",
         description = "Blend per-character gradient colors across words and lines.",
         category = "Typography & Glow",
@@ -292,7 +300,7 @@ public final class AirLyricsOneConfig extends Config {
             "enabled", "inWorld", "skyLyrics", "skyScalePercent", "skyElevationDeg",
             "onScreen", "appleStyle", "worldAppleStyle", "showWords", "scatterLayout",
             "scalePercent", "opacityPercent", "fontIndex", "uppercase",
-            "glowEnabled", "glowIntensityPercent", "gradientEnabled", "movingGradient",
+            "glowEnabled", "glowIntensityPercent", "thumbnailGradient", "gradientEnabled", "movingGradient",
             "gradientColorStart", "gradientColorEnd", "gradientSpeedPercent",
             "rainbowPastel", "primaryColor", "syncOffsetMs", "estimateWordTimings"
         };
@@ -335,6 +343,7 @@ public final class AirLyricsOneConfig extends Config {
             LyricsConfig.uppercase = uppercase;
             LyricsConfig.glowEnabled = glowEnabled;
             LyricsConfig.glowIntensityPercent = glowIntensityPercent;
+            LyricsConfig.thumbnailGradient = thumbnailGradient;
             LyricsConfig.gradientEnabled = gradientEnabled;
             LyricsConfig.movingGradient = movingGradient;
             if (gradientColorStart != null) {
@@ -382,6 +391,7 @@ public final class AirLyricsOneConfig extends Config {
             uppercase = LyricsConfig.uppercase;
             glowEnabled = LyricsConfig.glowEnabled;
             glowIntensityPercent = LyricsConfig.glowIntensityPercent;
+            thumbnailGradient = LyricsConfig.thumbnailGradient;
             gradientEnabled = LyricsConfig.gradientEnabled;
             movingGradient = LyricsConfig.movingGradient;
             gradientColorStart = new PolyColor(0xFF000000 | (LyricsConfig.gradientColorStart & 0x00FFFFFF));

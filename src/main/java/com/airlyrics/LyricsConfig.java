@@ -38,6 +38,7 @@ public class LyricsConfig {
     public static boolean glowEnabled = true;
     public static float glowIntensityPercent = 100.0f;
 
+    public static boolean thumbnailGradient = true;
     public static boolean gradientEnabled = false;
     public static boolean movingGradient = true;
     public static int gradientColorStart = 0x66F3FF;
@@ -148,6 +149,7 @@ public class LyricsConfig {
         d.opacityPercent = opacityPercent;
         d.glowEnabled = glowEnabled;
         d.glowIntensityPercent = glowIntensityPercent;
+        d.thumbnailGradient = thumbnailGradient;
         d.gradientEnabled = gradientEnabled;
         d.movingGradient = movingGradient;
         d.gradientColorStart = gradientColorStart;
@@ -179,6 +181,7 @@ public class LyricsConfig {
         opacityPercent = d.opacityPercent;
         glowEnabled = d.glowEnabled;
         glowIntensityPercent = d.glowIntensityPercent;
+        thumbnailGradient = d.thumbnailGradient;
         gradientEnabled = d.gradientEnabled;
         movingGradient = d.movingGradient;
         gradientColorStart = d.gradientColorStart;
@@ -210,6 +213,7 @@ public class LyricsConfig {
         float opacityPercent = 100.0f;
         boolean glowEnabled = true;
         float glowIntensityPercent = 100.0f;
+        boolean thumbnailGradient = true;
         boolean gradientEnabled = false;
         boolean movingGradient = true;
         int gradientColorStart = 0x66F3FF;

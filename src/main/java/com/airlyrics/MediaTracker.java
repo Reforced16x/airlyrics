@@ -152,6 +152,7 @@ public class MediaTracker {
             if (!lastTrackKey.isEmpty()) {
                 lastTrackKey = "";
                 LyricsFetcher.clearLyrics();
+                CoverColorExtractor.clear();
             }
             return;
         }
@@ -178,6 +179,7 @@ public class MediaTracker {
             lastSeenFiletime = -1L;
             syntheticAnchorMs = now;
             LyricsFetcher.onTrackChanged(snap.title, snap.artist, snap.durationMs);
+            CoverColorExtractor.onTrackChanged(snap.title, snap.artist, snap.album, snap.thumbnailBytes);
         }
     }
 
@@ -227,11 +229,19 @@ public class MediaTracker {
         private static final int RO_INIT_MULTITHREADED = 1;
         private static final int RPC_E_CHANGED_MODE = 0x80010106;
         private static final String MANAGER_CLASS = "Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager";
+        private static final String BUFFER_CLASS = "Windows.Storage.Streams.Buffer";
         private static final Memory IID_MANAGER_STATICS = parseGuid("2050c4ee-11a0-57de-aed7-c97c70338245");
         private static final Memory IID_ASYNC_INFO = parseGuid("00000036-0000-0000-c000-000000000046");
+        private static final Memory IID_IRANDOM_ACCESS_STREAM = parseGuid("905a0fe1-bc53-11df-8c49-001e4fc686da");
+        private static final Memory IID_IINPUT_STREAM = parseGuid("905a0fe2-bc53-11df-8c49-001e4fc686da");
+        private static final Memory IID_IBUFFER_FACTORY = parseGuid("71af914d-c10f-484b-bc50-14bc623b3a27");
+        private static final Memory IID_IBUFFER_BYTE_ACCESS = parseGuid("905a0fef-bc53-11df-8c49-001e4fc686da");
 
         private final CombaseLibrary combase;
         private Com manager;
+        private Com bufferFactory;
+        private String lastThumbKey = "";
+        private byte[] lastThumbBytes = null;
 
         WinRtMedia() {
             this.combase = (CombaseLibrary) Native.loadLibrary("combase", CombaseLibrary.class);
@@ -347,12 +357,21 @@ public class MediaTracker {
             String title = "";
             String artist = "";
             String album = "";
+            byte[] thumbBytes = null;
             try (Com op = session.child(7);
                  Com props = op != null ? op.awaitAsync(IID_ASYNC_INFO, 1200L) : null) {
                 if (props != null) {
                     title = safeTrim(props.getString(6));
                     artist = safeTrim(props.getString(9));
                     album = safeTrim(props.getString(10));
+                    if (!title.isEmpty()) {
+                        String tKey = artist + "\u0000" + title;
+                        if (!tKey.equals(lastThumbKey)) {
+                            lastThumbKey = tKey;
+                            lastThumbBytes = readThumbnailBytes(props);
+                        }
+                        thumbBytes = lastThumbBytes;
+                    }
                 }
             } catch (Throwable ignored) {
             }
@@ -402,11 +421,80 @@ public class MediaTracker {
             } catch (Throwable ignored) {
             }
 
-            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM", sampleNowMs);
+            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM", sampleNowMs, thumbBytes);
+        }
+
+        private byte[] readThumbnailBytes(Com props) {
+            try (Com thumbRef = props.child(15)) {
+                if (thumbRef == null) {
+                    return null;
+                }
+                try (Com openOp = thumbRef.child(6);
+                     Com streamWithType = openOp != null ? openOp.awaitAsync(IID_ASYNC_INFO, 1200L) : null) {
+                    if (streamWithType == null) {
+                        return null;
+                    }
+                    long sizeLong;
+                    try (Com randStream = new Com(combase, streamWithType.queryInterface(IID_IRANDOM_ACCESS_STREAM))) {
+                        sizeLong = randStream.getLong(6);
+                    }
+                    if (sizeLong <= 32L || sizeLong > 4L * 1024L * 1024L) {
+                        return null;
+                    }
+                    if (bufferFactory == null) {
+                        try (HString bufId = new HString(combase, BUFFER_CLASS)) {
+                            PointerByReference factoryRef = new PointerByReference();
+                            int hr = combase.RoGetActivationFactory(bufId.ptr, IID_IBUFFER_FACTORY, factoryRef);
+                            checkHr(hr, "RoGetActivationFactory(Buffer)");
+                            bufferFactory = new Com(combase, factoryRef.getValue());
+                        }
+                    }
+
+                    int capacity = (int) Math.min(sizeLong, 262144L);
+                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream((int) sizeLong);
+                    try (Com inputStream = new Com(combase, streamWithType.queryInterface(IID_IINPUT_STREAM));
+                         Com ibuf = bufferFactory.childAt(6, capacity)) {
+                        if (ibuf == null) {
+                            return null;
+                        }
+                        while (baos.size() < sizeLong) {
+                            try (Com readOp = inputStream.readAsync(ibuf.ptr, capacity);
+                                 Com resBuf = readOp != null ? readOp.awaitAsyncWithProgress(IID_ASYNC_INFO, 1200L) : null) {
+                                if (resBuf == null) {
+                                    break;
+                                }
+                                int len = resBuf.getInt(7);
+                                if (len <= 0) {
+                                    break;
+                                }
+                                Pointer byteAccPtr = resBuf.queryInterface(IID_IBUFFER_BYTE_ACCESS);
+                                try (Com byteAcc = new Com(combase, byteAccPtr)) {
+                                    PointerByReference dataPtrRef = new PointerByReference();
+                                    int hr = byteAcc.invoke(3, dataPtrRef);
+                                    checkHr(hr, "IBufferByteAccess.Buffer");
+                                    Pointer rawBuf = dataPtrRef.getValue();
+                                    if (rawBuf != null) {
+                                        baos.write(rawBuf.getByteArray(0L, len));
+                                    }
+                                }
+                            }
+                            ibuf.invoke(8, 0);
+                        }
+                    }
+                    byte[] result = baos.toByteArray();
+                    return result.length > 32 ? result : null;
+                }
+            } catch (Throwable ignored) {
+                return null;
+            }
         }
 
         @Override
         public void close() {
+            if (bufferFactory != null) {
+                bufferFactory.close();
+                bufferFactory = null;
+            }
             if (manager != null) {
                 manager.close();
                 manager = null;
@@ -537,6 +625,14 @@ public class MediaTracker {
         }
 
         Com awaitAsync(Memory iidAsyncInfo, long timeoutMs) {
+            return awaitAsyncSlot(iidAsyncInfo, timeoutMs, 8);
+        }
+
+        Com awaitAsyncWithProgress(Memory iidAsyncInfo, long timeoutMs) {
+            return awaitAsyncSlot(iidAsyncInfo, timeoutMs, 10);
+        }
+
+        private Com awaitAsyncSlot(Memory iidAsyncInfo, long timeoutMs, int resultsSlot) {
             long deadline = System.currentTimeMillis() + timeoutMs;
             int status;
             try (Com asyncInfo = new Com(combase, queryInterface(iidAsyncInfo))) {
@@ -554,7 +650,15 @@ public class MediaTracker {
             if (status != 1) {
                 return null;
             }
-            return child(8);
+            return child(resultsSlot);
+        }
+
+        Com readAsync(Pointer bufferPtr, int count) {
+            PointerByReference out = new PointerByReference();
+            int hr = invoke(6, bufferPtr, count, 0, out);
+            WinRtMedia.checkHr(hr, "IInputStream.ReadAsync");
+            Pointer opPtr = out.getValue();
+            return opPtr != null ? new Com(combase, opPtr) : null;
         }
 
         @Override
@@ -790,7 +894,7 @@ public class MediaTracker {
     }
 
     private static final class MediaSnapshot {
-        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None", 0L);
+        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None", 0L, null);
 
         final String title;
         final String artist;
@@ -801,14 +905,15 @@ public class MediaTracker {
         final String player;
         final String backend;
         final long sampleTimeMs;
+        final byte[] thumbnailBytes;
 
         MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
                       boolean playing, String player, String backend) {
-            this(title, artist, album, positionMs, durationMs, playing, player, backend, System.currentTimeMillis());
+            this(title, artist, album, positionMs, durationMs, playing, player, backend, System.currentTimeMillis(), null);
         }
 
         MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
-                      boolean playing, String player, String backend, long sampleTimeMs) {
+                      boolean playing, String player, String backend, long sampleTimeMs, byte[] thumbnailBytes) {
             this.title = title;
             this.artist = artist;
             this.album = album;
@@ -818,6 +923,7 @@ public class MediaTracker {
             this.player = player;
             this.backend = backend;
             this.sampleTimeMs = sampleTimeMs;
+            this.thumbnailBytes = thumbnailBytes;
         }
     }
 }

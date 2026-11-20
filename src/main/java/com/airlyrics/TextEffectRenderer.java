@@ -23,11 +23,16 @@ public final class TextEffectRenderer {
     private TextEffectRenderer() {
     }
 
+    public static boolean isEffectiveGradientActive() {
+        return (LyricsConfig.thumbnailGradient && CoverColorExtractor.hasCoverGradient())
+                || LyricsConfig.gradientEnabled;
+    }
+
     /**
      * Computes a character's RGB color, smoothly evaluating linear or moving gradients when enabled.
      */
     public static int resolveColorRgb(int fallbackRgb, float normalizedPos, float phaseSeed) {
-        if (!LyricsConfig.gradientEnabled) {
+        if (!isEffectiveGradientActive()) {
             return fallbackRgb & 0x00FFFFFF;
         }
         int start = resolveGradientStartRgb();
@@ -43,10 +48,16 @@ public final class TextEffectRenderer {
     }
 
     public static int resolveGradientStartRgb() {
+        if (LyricsConfig.thumbnailGradient && CoverColorExtractor.hasCoverGradient()) {
+            return CoverColorExtractor.getStartRgb();
+        }
         return OneConfigCompat.resolveGradientStartRgb(LyricsConfig.gradientColorStart);
     }
 
     public static int resolveGradientEndRgb() {
+        if (LyricsConfig.thumbnailGradient && CoverColorExtractor.hasCoverGradient()) {
+            return CoverColorExtractor.getEndRgb();
+        }
         return OneConfigCompat.resolveGradientEndRgb(LyricsConfig.gradientColorEnd);
     }
 
@@ -97,7 +108,7 @@ public final class TextEffectRenderer {
             out[0] = (a << 24) | solidRgb;
             return out;
         }
-        if (!allowGradient || !LyricsConfig.gradientEnabled) {
+        if (!allowGradient || !isEffectiveGradientActive()) {
             int argb = (a << 24) | solidRgb;
             for (int i = 0; i < n; i++) {
                 out[i] = argb;
@@ -148,7 +159,7 @@ public final class TextEffectRenderer {
             drawPerCharGlow(client, text, x, y, cols, -1.0f, glowAlpha, spread);
         }
 
-        if (allowGradient && LyricsConfig.gradientEnabled) {
+        if (allowGradient && isEffectiveGradientActive()) {
             FontManager.drawPerCharColored(client, text, x, y, cols, false);
         } else {
             int argb = (baseA << 24) | (fallbackRgb & 0x00FFFFFF);
