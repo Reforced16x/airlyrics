@@ -4,7 +4,7 @@ A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time s
 
 ## Features
 
-- **EvergreenHUD-Grade Media & Lyrics Sync:**
+- **Lyrics Sync:**
   - Direct WinRT COM (`GlobalSystemMediaTransportControlsSessionManager`) polling via JNA (`200ms` interval) on Windows with exact post-COM `LastUpdatedTime` age compensation, stalled-position anchor synthesis, PowerShell fallback, and duration-aware MPRIS (`playerctl` / `gdbus`) on Linux.
   - Multi-provider lookup with channel-suffix (`VEVO` / `- Topic`) normalization & title splitting across [`lrc.red`](https://lrc.red) (YAML word-level sync), [`lrclib.net`](https://lrclib.net) (duration-scored & enhanced LRC word tags), KuGou (`KRC` decrypted word-sync), and NetEase fallback.
   - Beat-paced syllable and punctuation word-timing estimator (`estimateWordTimings`) for plain line-synced tracks, plus sub-frame bidirectional exponential clock smoothing and seek recovery.
