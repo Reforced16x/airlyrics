@@ -11,11 +11,10 @@ A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time s
 - **Full Ornithe 1.8.9 OneConfig Support:**
   - Annotated OneConfig v1 configuration screen (`Display`, `Typography & Glow`, `Effects & Sync`) with switches, sliders, font dropdown, live RGB/Chroma color pickers, and quick `Reset HUD` / `Reset All` actions.
   - Interactive HUD Editor placement, proportional scaling, and live sample preview via `OneConfigHudWrapper` (falls back automatically to the built-in two-tab settings GUI if OneConfig is absent).
-- **Apple Lyrics Style & Classic HUD Modes:** Toggle between a frosted rounded Apple Music-style rolling lyrics card (with under-damped spring line scrolling and sub-glyph progressive sweep) or the compact classic 2-line karaoke HUD.
+- **Apple Lyrics Style & World Apple Effect (`appleStyle`, `worldAppleStyle`):** Toggle a frosted rounded Apple Music-style rolling lyrics card on the HUD, and apply the progressive karaoke sub-glyph wipe, spring swell, and bounce directly to 3D floating in-world lyrics.
 - **Sky Line-by-Line Lyrics (`skyLyrics`):** Display a large, yaw-following karaoke marquee high in the sky dome (`15°`–`72°` elevation, `60%`–`300%` scale) with progressive wipe fill and context lines.
 - **Font Selector (`fontIndex`):** Switch seamlessly across HUD, 3D World, and Sky between vanilla **Minecraft**, **Clean Sans**, **Sans Bold**, **Rounded UI**, **Editorial Serif**, and **JetBrains / Mono** anti-aliased glyph atlases.
-- **Smooth Gaussian Glow, Gradients & Moving Gradients:** Hardware linear-filtered radial pill bloom (zero rough bitmap transitions or pixel-offset ghosts) paired with static and smooth flowing per-character gradients compatible with shaders.
-- **Lyrics Emit Light (`lyricsEmitLight`):** Project real client-side dynamic block lighting (`4`–`15` light level) into nearby terrain and entities around active floating and sky lyrics without modifying saved chunks (compatible with vanilla lighting and shaders).
+- **Smooth Per-Glyph Glow, Gradients & Moving Gradients:** Hardware linear-filtered per-character radial glow coherently matched to static and moving per-character gradients (no shadow punch-through, compatible with shaders).
 - **Opacity Setting:** Configurable opacity (`10%`–`100%`) applied cleanly across world words, sky marquee, HUD cards, and glow halos.
 
 ## Requirements

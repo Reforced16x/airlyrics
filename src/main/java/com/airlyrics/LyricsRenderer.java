@@ -12,9 +12,9 @@ import java.util.Locale;
 import java.util.Random;
 
 /**
- * Coordinates sub-frame lyric clock smoothing, floating in-world words/lines,
- * sky-dome line-by-line marquee, client dynamic light emission, and both
- * Apple Lyrics Style and classic HUD overlays.
+ * Coordinates sub-frame lyric clock smoothing, floating in-world words/lines
+ * (with optional World Apple Lyrics sweep effect), sky-dome line-by-line marquee,
+ * and both Apple Lyrics Style and classic HUD overlays.
  */
 public final class LyricsRenderer {
     private static final double SMOOTHING_MS = 250.0;
@@ -74,19 +74,14 @@ public final class LyricsRenderer {
             clearActiveWords();
             clockInitialized = false;
             skyYawInitialized = false;
-            DynamicLightManager.clear(client);
             return;
         }
 
         if (client.isPaused()) {
             pauseAlpha = approach(pauseAlpha, 0.0f, 0.25f);
-            DynamicLightManager.clear(client);
         } else {
             float targetAlpha = MediaTracker.isPlaying ? 1.0f : 0.35f;
             pauseAlpha = approach(pauseAlpha, targetAlpha, 0.2f);
-            if (!LyricsConfig.lyricsEmitLight) {
-                DynamicLightManager.clear(client);
-            }
         }
 
         long nowSys = System.currentTimeMillis();
@@ -97,14 +92,16 @@ public final class LyricsRenderer {
      * Main render hook invoked on GameGui tail (screen-space overlays and shader-safe 3D projections).
      */
     public static void renderHudLyrics(float tickDelta) {
+        if (ShaderCompat.isShadowPass()) {
+            return;
+        }
         Minecraft client = Minecraft.getInstance();
         if (client == null || client.world == null || client.player == null) {
             return;
         }
 
         boolean editorOpen = OneConfigCompat.isHudEditorOpen();
-        if (!LyricsConfig.enabled) {
-            DynamicLightManager.clear(client);
+        if (!LyricsConfig.enabled && !editorOpen) {
             return;
         }
 
@@ -113,35 +110,25 @@ public final class LyricsRenderer {
 
         updateClock(client, nowSys, frameDtMs);
 
-        if (!client.isPaused()) {
-            updateWorldSpawns(client, nowSys);
-        }
-
         Window window = new Window(client);
         CameraView cam = computeCamera(client, window, tickDelta);
 
+        if (LyricsConfig.enabled && !client.isPaused()) {
+            updateWorldSpawns(client, cam, nowSys);
+        }
+
         ShaderCompat.SavedRenderState savedState = ShaderCompat.beginLuminousTextPass();
         try {
-            List<DynamicLightManager.LightPoint> emitters = LyricsConfig.lyricsEmitLight
-                    ? new ArrayList<DynamicLightManager.LightPoint>()
-                    : null;
-
-            if (LyricsConfig.inWorld && !client.isPaused()) {
-                renderWorldWords(client, cam, nowSys, emitters);
+            if (LyricsConfig.enabled && LyricsConfig.inWorld && !client.isPaused()) {
+                renderWorldWords(client, cam, nowSys);
             }
 
-            if (LyricsConfig.skyLyrics && !client.isPaused()) {
-                renderSkyLyrics(client, cam, nowSys, frameDtMs, emitters);
+            if (LyricsConfig.enabled && LyricsConfig.skyLyrics && !client.isPaused()) {
+                renderSkyLyrics(client, cam, nowSys, frameDtMs);
             }
 
             if (LyricsConfig.onScreen || editorOpen) {
                 renderHudOverlay(client, window, editorOpen, nowSys);
-            }
-
-            if (emitters != null && !client.isPaused()) {
-                DynamicLightManager.update(client, emitters);
-            } else {
-                DynamicLightManager.clear(client);
             }
         } finally {
             ShaderCompat.endLuminousTextPass(savedState);
@@ -221,7 +208,7 @@ public final class LyricsRenderer {
         }
     }
 
-    private static void updateWorldSpawns(Minecraft client, long nowSys) {
+    private static void updateWorldSpawns(Minecraft client, CameraView cam, long nowSys) {
         if (!LyricsConfig.inWorld || !MediaTracker.hasMedia || !MediaTracker.isPlaying) {
             return;
         }
@@ -231,33 +218,52 @@ public final class LyricsRenderer {
         }
 
         long nowPos = Math.round(smoothPosMs);
-        int activeIdx = LyricsFetcher.getActiveLineIndex(nowPos);
+        long preRollMs = (LyricsConfig.worldAppleStyle && LyricsConfig.showWords) ? 220L : 0L;
+        int activeIdx = LyricsFetcher.getActiveLineIndex(nowPos + preRollMs);
         if (activeIdx < 0 || activeIdx >= lines.size()) {
             return;
         }
 
-        LyricsFetcher.LyricLine line = lines.get(activeIdx);
+        // Flush any remaining word on the previous line before advancing cursor at pre-roll boundary
+        if (lastSpawnLineIdx >= 0 && lastSpawnLineIdx == activeIdx - 1 && LyricsConfig.showWords) {
+            LyricsFetcher.LyricLine prevLine = lines.get(lastSpawnLineIdx);
+            if (prevLine.words != null) {
+                for (int i = Math.max(0, lastSpawnWordIdx + 1); i < prevLine.words.size(); i++) {
+                    LyricsFetcher.LyricWord w = prevLine.words.get(i);
+                    if (nowPos + preRollMs >= w.timeMs) {
+                        String wordText = formatCase(w.text);
+                        if (!wordText.isEmpty()) {
+                            long wSpan = Math.max(400L, w.endTimeMs - w.timeMs);
+                            long dur = Math.max(1550L, Math.min(2800L, wSpan + 1250L));
+                            spawnInView(client, cam, wordText, dur, nowSys,
+                                    lastSpawnLineIdx * 0.37f + i * 0.19f, i, prevLine.words.size(),
+                                    w.timeMs, w.endTimeMs, null);
+                        }
+                    }
+                }
+            }
+        }
 
-        // If cursor jumped over lines, resync cleanly to current line
         if (lastSpawnLineIdx != activeIdx) {
             lastSpawnLineIdx = activeIdx;
             lastSpawnWordIdx = -1;
         }
 
+        LyricsFetcher.LyricLine line = lines.get(activeIdx);
         if (!LyricsConfig.showWords || line.words == null || line.words.isEmpty()) {
             if (lastSpawnWordIdx < 0 && nowPos >= line.startTimeMs) {
                 lastSpawnWordIdx = 0;
-                long dur = Math.max(1600L, Math.min(3400L, line.endTimeMs - line.startTimeMs + 500L));
-                spawnInView(client, formatCase(line.fullLine), dur, nowSys, activeIdx * 0.31f, 0);
+                long dur = Math.max(1800L, Math.min(4800L, (line.endTimeMs - line.startTimeMs) + 800L));
+                List<LyricsFetcher.LyricWord> subs = (line.words != null && !line.words.isEmpty()) ? line.words : null;
+                spawnInView(client, cam, formatCase(line.fullLine), dur, nowSys, activeIdx * 0.31f,
+                        0, 1, line.startTimeMs, line.endTimeMs, subs);
             }
             return;
         }
 
-        // Spawn every newly entered word at sub-frame resolution
-        int spawnedCountThisFrame = 0;
         for (int i = Math.max(0, lastSpawnWordIdx + 1); i < line.words.size(); i++) {
             LyricsFetcher.LyricWord w = line.words.get(i);
-            if (nowPos < w.timeMs) {
+            if (nowPos < w.timeMs - preRollMs) {
                 break;
             }
             lastSpawnWordIdx = i;
@@ -266,76 +272,78 @@ public final class LyricsRenderer {
                 continue;
             }
             long wSpan = Math.max(400L, w.endTimeMs - w.timeMs);
-            long dur = Math.max(1500L, Math.min(2800L, wSpan + 1150L));
+            long dur = Math.max(1550L, Math.min(2800L, wSpan + 1250L));
             float phaseSeed = activeIdx * 0.37f + i * 0.19f;
-            spawnInView(client, wordText, dur, nowSys, phaseSeed, i + spawnedCountThisFrame);
-            spawnedCountThisFrame++;
+            spawnInView(client, cam, wordText, dur, nowSys, phaseSeed, i, line.words.size(),
+                    w.timeMs, w.endTimeMs, null);
         }
     }
 
-    private static void spawnInView(Minecraft client, String text, long durationMs,
-                                    long nowSys, float phaseSeed, int wordSlot) {
-        if (text == null || text.isEmpty() || client.player == null) {
+    private static void spawnInView(Minecraft client, CameraView cam, String text, long durationMs,
+                                    long nowSys, float phaseSeed, int wordIndex, int totalWords,
+                                    long wordStartMs, long wordEndMs, List<LyricsFetcher.LyricWord> subWords) {
+        if (text == null || text.isEmpty() || client.player == null || cam == null) {
             return;
         }
 
-        Entity cam = client.getCamera() != null ? client.getCamera() : client.player;
-        double camX = cam.x;
-        double camY = cam.y + cam.getEyeHeight();
-        double camZ = cam.z;
+        boolean firstPerson = client.options.perspective == 0;
+        double baseDist = firstPerson ? 4.2 : 6.8;
+        double spread = baseDist / 4.2;
 
-        double yawRad = Math.toRadians(cam.yaw);
-        double pitchRad = Math.toRadians(cam.pitch);
-
-        double fX = -Math.sin(yawRad) * Math.cos(pitchRad);
-        double fY = -Math.sin(pitchRad);
-        double fZ = Math.cos(yawRad) * Math.cos(pitchRad);
-
-        double rX = -Math.cos(yawRad);
-        double rZ = -Math.sin(yawRad);
-
-        // Orthogonal camera up
-        double uX = -fY * rZ;
-        double uY = fZ * rX - fX * rZ;
-        double uZ = fY * rX;
-
-        double depth = 4.0 + RANDOM.nextDouble() * 2.2;
-        double lateral;
-        double vertical;
-        double driftRight;
-        double driftUp;
-
+        double bestWx = 0.0, bestWy = 0.0, bestWz = 0.0;
         if (LyricsConfig.scatterLayout) {
-            lateral = (RANDOM.nextDouble() - 0.5) * 3.8;
-            vertical = (RANDOM.nextDouble() - 0.42) * 2.1;
-            driftRight = (RANDOM.nextDouble() - 0.5) * 0.28;
-            driftUp = 0.25 + RANDOM.nextDouble() * 0.22;
+            double bestScore = -1.0;
+            for (int attempt = 0; attempt < 8; attempt++) {
+                double distance = baseDist + RANDOM.nextDouble() * 1.5;
+                double offsetH = (RANDOM.nextDouble() - 0.5) * 3.1 * spread;
+                double offsetV = (RANDOM.nextDouble() - 0.46) * 1.54 * spread;
+
+                double cx = cam.x + cam.fX * distance + cam.rX * offsetH + cam.uX * offsetV;
+                double cy = cam.y + cam.fY * distance + cam.uY * offsetV;
+                double cz = cam.z + cam.fZ * distance + cam.rZ * offsetH + cam.uZ * offsetV;
+
+                double minSq = ACTIVE_WORLD_WORDS.isEmpty() ? 100.0 : Double.MAX_VALUE;
+                for (int j = 0; j < ACTIVE_WORLD_WORDS.size(); j++) {
+                    FloatingWord existing = ACTIVE_WORLD_WORDS.get(j);
+                    double ex = cx - existing.worldX;
+                    double ey = cy - existing.worldY;
+                    double ez = cz - existing.worldZ;
+                    double sq = ex * ex + ey * ey + ez * ez;
+                    if (sq < minSq) {
+                        minSq = sq;
+                    }
+                }
+                if (minSq > bestScore) {
+                    bestScore = minSq;
+                    bestWx = cx;
+                    bestWy = cy;
+                    bestWz = cz;
+                }
+            }
         } else {
-            int slot = wordSlot % 6;
-            lateral = -1.6 + slot * 0.65 + (RANDOM.nextDouble() - 0.5) * 0.35;
-            vertical = 0.15 + ((wordSlot % 2 == 0) ? 0.22 : -0.18);
-            driftRight = 0.04;
-            driftUp = 0.24;
+            double distance = baseDist;
+            double centeredIdx = wordIndex - (Math.max(1, totalWords) - 1) * 0.5;
+            double offsetH = centeredIdx * 0.65 * spread;
+            double offsetV = 0.15 * spread;
+            bestWx = cam.x + cam.fX * distance + cam.rX * offsetH + cam.uX * offsetV;
+            bestWy = cam.y + cam.fY * distance + cam.uY * offsetV;
+            bestWz = cam.z + cam.fZ * distance + cam.rZ * offsetH + cam.uZ * offsetV;
         }
 
-        double wx = camX + fX * depth + rX * lateral + uX * vertical;
-        double wy = camY + fY * depth + uY * vertical;
-        double wz = camZ + fZ * depth + rZ * lateral + uZ * vertical;
-
-        int color = PASTEL_PALETTE[(Math.abs(wordSlot) + RANDOM.nextInt(PASTEL_PALETTE.length)) % PASTEL_PALETTE.length];
+        int color = PASTEL_PALETTE[(Math.abs(wordIndex) + RANDOM.nextInt(PASTEL_PALETTE.length)) % PASTEL_PALETTE.length];
 
         FloatingWord fw = new FloatingWord();
         fw.text = text;
-        fw.worldX = wx;
-        fw.worldY = wy;
-        fw.worldZ = wz;
-        fw.driftX = rX * driftRight + uX * driftUp;
-        fw.driftY = uY * driftUp + 0.08;
-        fw.driftZ = rZ * driftRight + uZ * driftUp;
+        fw.worldX = bestWx;
+        fw.worldY = bestWy;
+        fw.worldZ = bestWz;
         fw.spawnMs = nowSys;
         fw.durationMs = durationMs;
         fw.colorRgb = color;
         fw.phaseSeed = phaseSeed;
+        fw.wordStartMs = wordStartMs;
+        fw.wordEndMs = wordEndMs;
+        fw.subWords = subWords;
 
         ACTIVE_WORLD_WORDS.add(fw);
         while (ACTIVE_WORLD_WORDS.size() > 28) {
@@ -353,8 +361,7 @@ public final class LyricsRenderer {
         }
     }
 
-    private static void renderWorldWords(Minecraft client, CameraView cam, long nowSys,
-                                         List<DynamicLightManager.LightPoint> emitters) {
+    private static void renderWorldWords(Minecraft client, CameraView cam, long nowSys) {
         if (ACTIVE_WORLD_WORDS.isEmpty()) {
             return;
         }
@@ -364,9 +371,11 @@ public final class LyricsRenderer {
             return;
         }
 
+        long nowPos = Math.round(smoothPosMs);
         int fixedPrimary = OneConfigCompat.resolvePrimaryColorRgb(LyricsConfig.primaryColor);
         float glowSetting = LyricsConfig.getGlowFactor();
         float userScale = Math.max(0.5f, Math.min(2.5f, LyricsConfig.scalePercent / 100.0f));
+        boolean appleWorld = LyricsConfig.worldAppleStyle;
 
         Iterator<FloatingWord> it = ACTIVE_WORLD_WORDS.iterator();
         while (it.hasNext()) {
@@ -378,7 +387,6 @@ public final class LyricsRenderer {
             }
             float progress = Math.max(0.0f, Math.min(1.0f, age / (float) fw.durationMs));
 
-            // Completely continuous envelope — zero sharp thresholds or rough transitions
             float fadeIn = smoothstep(0.0f, 0.14f, progress);
             float fadeOut = 1.0f - smoothstep(0.70f, 1.0f, progress);
             float alpha = opacity * fadeIn * fadeOut;
@@ -386,43 +394,111 @@ public final class LyricsRenderer {
                 continue;
             }
 
-            double sec = age / 1000.0;
-            double wx = fw.worldX + fw.driftX * sec;
-            double wy = fw.worldY + fw.driftY * sec;
-            double wz = fw.worldZ + fw.driftZ * sec;
+            // World-space gentle upward drift (independent of camera pitch/movement)
+            double wx = fw.worldX;
+            double wy = fw.worldY + progress * 0.24;
+            double wz = fw.worldZ;
 
             ProjectedPoint pt = projectToScreen(cam, wx, wy, wz);
             if (pt == null) {
                 continue;
             }
 
-            if (emitters != null) {
-                int lv = Math.max(2, Math.min(15, Math.round(LyricsConfig.emitLightLevel * (0.45f + 0.55f * fadeIn * fadeOut))));
-                emitters.add(new DynamicLightManager.LightPoint(wx, wy, wz, lv));
-            }
-
-            float scalePop = 0.92f + 0.10f * fadeIn - 0.04f * smoothstep(0.74f, 1.0f, progress);
+            float scalePop = appleWorld
+                    ? (0.86f + 0.14f * evaluateSpring(age))
+                    : (0.92f + 0.10f * fadeIn - 0.04f * smoothstep(0.74f, 1.0f, progress));
             float worldHeightBlocks = 0.34f * userScale * scalePop;
-            float renderScale = Math.max(0.45f, Math.min(4.2f,
+            float baseRenderScale = Math.max(0.45f, Math.min(4.2f,
                     (float) ((worldHeightBlocks * pt.pixelsPerBlock) / FontManager.LOGICAL_HEIGHT)));
 
-            // Silky continuous bell curve halo (fades in effortlessly, glows warmly, dissolves cleanly)
-            float glowAmount = glowSetting * fadeIn * fadeOut * (0.50f + 0.65f * (float) Math.exp(-progress * 1.9));
-
             int rgb = LyricsConfig.rainbowPastel ? fw.colorRgb : fixedPrimary;
-            float width = FontManager.getStringWidth(client, fw.text);
 
             GlStateManager.pushMatrix();
             GlStateManager.translated(pt.screenX, pt.screenY, 0.0);
-            GlStateManager.scalef(renderScale, renderScale, 1.0f);
-            TextEffectRenderer.drawStyledText(client, fw.text, -width * 0.5f, -4.5f, width,
-                    rgb, alpha, true, glowAmount, fw.phaseSeed);
+            GlStateManager.scalef(baseRenderScale, baseRenderScale, 1.0f);
+
+            if (appleWorld && fw.subWords != null && !fw.subWords.isEmpty()) {
+                renderWorldAppleLine(client, fw, nowPos, rgb, alpha, glowSetting);
+            } else if (appleWorld) {
+                if (nowPos < fw.wordStartMs) {
+                    float width = FontManager.getStringWidth(client, fw.text);
+                    TextEffectRenderer.drawStyledText(client, fw.text, -width * 0.5f, -4.5f, width,
+                            0xA8B9CC, alpha * 0.58f, true, 0.0f, fw.phaseSeed, false);
+                } else if (nowPos <= fw.wordEndMs) {
+                    float t = (float) (nowPos - fw.wordStartMs) / Math.max(45.0f, (float) (fw.wordEndMs - fw.wordStartMs));
+                    t = Math.max(0.0f, Math.min(1.0f, t));
+                    float wScale = evalWordScale(t);
+                    float wLift = evalWordLift(t) * 1.15f;
+                    float glowAmount = evalWordGlow(t) * glowSetting * 1.15f * fadeOut;
+                    float width = FontManager.getStringWidth(client, fw.text);
+                    GlStateManager.translatef(0.0f, -wLift, 0.0f);
+                    GlStateManager.scalef(wScale, wScale, 1.0f);
+                    TextEffectRenderer.drawWipedStyledText(client, fw.text, -width * 0.5f, -4.5f, width,
+                            0xA8B9CC, alpha * 0.58f, rgb, alpha, t, true, glowAmount, fw.phaseSeed);
+                } else {
+                    float afterMs = (float) (nowPos - fw.wordEndMs);
+                    float tailFade = 1.0f - Math.min(1.0f, afterMs / 360.0f);
+                    float tailGlow = glowSetting * fadeOut * (0.45f + 0.55f * tailFade);
+                    float width = FontManager.getStringWidth(client, fw.text);
+                    TextEffectRenderer.drawStyledText(client, fw.text, -width * 0.5f, -4.5f, width,
+                            rgb, alpha, true, tailGlow, fw.phaseSeed, true);
+                }
+            } else {
+                float glowAmount = glowSetting * fadeIn * fadeOut * (0.50f + 0.65f * (float) Math.exp(-progress * 1.9));
+                float width = FontManager.getStringWidth(client, fw.text);
+                TextEffectRenderer.drawStyledText(client, fw.text, -width * 0.5f, -4.5f, width,
+                        rgb, alpha, true, glowAmount, fw.phaseSeed, true);
+            }
+
             GlStateManager.popMatrix();
         }
     }
 
-    private static void renderSkyLyrics(Minecraft client, CameraView cam, long nowSys, float frameDtMs,
-                                        List<DynamicLightManager.LightPoint> emitters) {
+    private static void renderWorldAppleLine(Minecraft client, FloatingWord fw, long nowPos,
+                                             int highlightRgb, float lineAlpha, float glowSetting) {
+        float spaceW = FontManager.getCharWidth(client, ' ');
+        float totalW = 0.0f;
+        for (int i = 0; i < fw.subWords.size(); i++) {
+            String wt = formatCase(fw.subWords.get(i).text);
+            if (wt.isEmpty()) continue;
+            if (totalW > 0.0f) totalW += spaceW;
+            totalW += FontManager.getStringWidth(client, wt);
+        }
+        float cursorX = -totalW * 0.5f;
+        for (int i = 0; i < fw.subWords.size(); i++) {
+            LyricsFetcher.LyricWord word = fw.subWords.get(i);
+            String wt = formatCase(word.text);
+            if (wt.isEmpty()) continue;
+            float ww = FontManager.getStringWidth(client, wt);
+            float seed = fw.phaseSeed + i * 0.18f;
+
+            if (nowPos < word.timeMs) {
+                TextEffectRenderer.drawStyledText(client, wt, cursorX, -4.5f, ww,
+                        0xA8B9CC, lineAlpha * 0.56f, true, 0.0f, seed, false);
+            } else if (nowPos <= word.endTimeMs) {
+                float t = (float) (nowPos - word.timeMs) / Math.max(45.0f, (float) (word.endTimeMs - word.timeMs));
+                t = Math.max(0.0f, Math.min(1.0f, t));
+                float wScale = evalWordScale(t);
+                float wLift = evalWordLift(t) * 1.15f;
+                float wGlow = evalWordGlow(t) * glowSetting * 1.15f;
+
+                GlStateManager.pushMatrix();
+                GlStateManager.translatef(cursorX + ww * 0.5f, -wLift, 0.0f);
+                GlStateManager.scalef(wScale, wScale, 1.0f);
+                TextEffectRenderer.drawWipedStyledText(client, wt, -ww * 0.5f, -4.5f, ww,
+                        0xA8B9CC, lineAlpha * 0.58f, 0xFFFFFF, lineAlpha, t, true, wGlow, seed);
+                GlStateManager.popMatrix();
+            } else {
+                float afterMs = (float) (nowPos - word.endTimeMs);
+                float tailGlow = glowSetting * 0.55f * (1.0f - Math.min(1.0f, afterMs / 320.0f));
+                TextEffectRenderer.drawStyledText(client, wt, cursorX, -4.5f, ww,
+                        highlightRgb, lineAlpha, true, tailGlow, seed, true);
+            }
+            cursorX += ww + spaceW;
+        }
+    }
+
+    private static void renderSkyLyrics(Minecraft client, CameraView cam, long nowSys, float frameDtMs) {
         if (!MediaTracker.hasMedia) {
             return;
         }
@@ -487,11 +563,6 @@ public final class LyricsRenderer {
         int primaryRgb = OneConfigCompat.resolvePrimaryColorRgb(LyricsConfig.primaryColor);
         float glowSetting = LyricsConfig.getGlowFactor();
 
-        if (emitters != null && emitters.isEmpty()) {
-            int groundBeacon = Math.max(4, LyricsConfig.emitLightLevel - 2);
-            emitters.add(new DynamicLightManager.LightPoint(cam.x, cam.y + 2.2, cam.z, groundBeacon));
-        }
-
         for (int delta = -1; delta <= 1; delta++) {
             int idx = activeIdx + delta;
             if (idx < 0 || idx >= lines.size()) {
@@ -538,7 +609,7 @@ public final class LyricsRenderer {
                 float sideAlpha = opacity * (delta < 0 ? 0.34f : 0.52f);
                 int sideRgb = delta < 0 ? 0x8BA0B4 : 0xC6D8EA;
                 TextEffectRenderer.drawStyledText(client, text, -textW * 0.5f, -4.5f, textW,
-                        sideRgb, sideAlpha, true, glowSetting * 0.25f, phaseSeed);
+                        sideRgb, sideAlpha, true, glowSetting * 0.25f, phaseSeed, false);
             }
 
             GlStateManager.popMatrix();
@@ -681,7 +752,7 @@ public final class LyricsRenderer {
                     String txt = row.plainText;
                     float w = FontManager.getStringWidth(client, txt);
                     TextEffectRenderer.drawStyledText(client, txt, APPLE_CARD_PAD_X, drawY + r * rowStep, w,
-                            roleRgb, roleAlpha, true, glowFactor * 0.15f, slot.lineIdx * 0.29f + r * 0.17f);
+                            roleRgb, roleAlpha, true, glowFactor * 0.15f, slot.lineIdx * 0.29f + r * 0.17f, false);
                 }
             }
 
@@ -738,7 +809,7 @@ public final class LyricsRenderer {
 
                 if (nowPos < word.timeMs) {
                     TextEffectRenderer.drawStyledText(client, wText, cursorX, rowY, wWidth,
-                            0x9EB0C4, globalAlpha * 0.54f, true, 0.0f, phaseSeed);
+                            0x9EB0C4, globalAlpha * 0.54f, true, 0.0f, phaseSeed, false);
                 } else if (nowPos <= word.endTimeMs) {
                     float t = (float) (nowPos - word.timeMs) / Math.max(40.0f, (float) (word.endTimeMs - word.timeMs));
                     t = Math.max(0.0f, Math.min(1.0f, t));
@@ -809,7 +880,7 @@ public final class LyricsRenderer {
         }
 
         TextEffectRenderer.drawStyledText(client, nextText, 0.0f, 13.0f, nextW,
-                0x7A93AA, globalAlpha * 0.70f, true, glowFactor * 0.25f, (activeIdx + 1) * 0.31f);
+                0x7A93AA, globalAlpha * 0.70f, true, glowFactor * 0.25f, (activeIdx + 1) * 0.31f, false);
 
         GlStateManager.popMatrix();
     }
@@ -848,7 +919,7 @@ public final class LyricsRenderer {
                         highlightRgb, globalAlpha, true, tailGlow, phaseSeed);
             } else {
                 TextEffectRenderer.drawStyledText(client, wText, cursorX, 0.0f, wWidth,
-                        0xB8C2CC, globalAlpha * 0.72f, true, glowFactor * 0.2f, phaseSeed);
+                        0xB8C2CC, globalAlpha * 0.72f, true, glowFactor * 0.2f, phaseSeed, false);
             }
 
             cursorX += wWidth;
@@ -952,64 +1023,50 @@ public final class LyricsRenderer {
     private static CameraView computeCamera(Minecraft client, Window window, float tickDelta) {
         Entity cam = client.getCamera() != null ? client.getCamera() : client.player;
 
-        double px = cam.prevX + (cam.x - cam.prevX) * tickDelta;
-        double py = cam.prevY + (cam.y - cam.prevY) * tickDelta + cam.getEyeHeight();
-        double pz = cam.prevZ + (cam.z - cam.prevZ) * tickDelta;
+        double ex = cam.prevX + (cam.x - cam.prevX) * tickDelta;
+        double ey = cam.prevY + (cam.y - cam.prevY) * tickDelta + cam.getEyeHeight();
+        double ez = cam.prevZ + (cam.z - cam.prevZ) * tickDelta;
 
         float yawDeg = cam.lastYaw + wrapDegrees(cam.yaw - cam.lastYaw) * tickDelta;
         float pitchDeg = cam.lastPitch + (cam.pitch - cam.lastPitch) * tickDelta;
 
-        double yawRad = Math.toRadians(yawDeg);
-        double pitchRad = Math.toRadians(pitchDeg);
-
-        double fX = -Math.sin(yawRad) * Math.cos(pitchRad);
-        double fY = -Math.sin(pitchRad);
-        double fZ = Math.cos(yawRad) * Math.cos(pitchRad);
-
-        // Adjust viewpoint backward in third-person perspective
-        if (client.options.perspective == 1) {
-            px -= fX * 4.0;
-            py -= fY * 4.0;
-            pz -= fZ * 4.0;
-        } else if (client.options.perspective == 2) {
-            px += fX * 4.0;
-            py += fY * 4.0;
-            pz += fZ * 4.0;
-            fX = -fX;
-            fY = -fY;
-            fZ = -fZ;
+        int perspective = client.options.perspective;
+        if (perspective == 2) {
             yawDeg += 180.0f;
             pitchDeg = -pitchDeg;
-            yawRad = Math.toRadians(yawDeg);
         }
 
-        double rX = -Math.cos(yawRad);
-        double rZ = -Math.sin(yawRad);
-
-        // Camera Up = Right x Forward
-        double uX = -fY * rZ;
-        double uY = fZ * rX - fX * rZ;
-        double uZ = fY * rX;
+        double yawRad = Math.toRadians(yawDeg);
+        double pitchRad = Math.toRadians(pitchDeg);
+        double sinY = Math.sin(yawRad);
+        double cosY = Math.cos(yawRad);
+        double sinP = Math.sin(pitchRad);
+        double cosP = Math.cos(pitchRad);
 
         CameraView view = new CameraView();
-        view.x = px;
-        view.y = py;
-        view.z = pz;
+        view.fX = -sinY * cosP;
+        view.fY = -sinP;
+        view.fZ = cosY * cosP;
+
+        view.rX = -cosY;
+        view.rZ = -sinY;
+
+        // Right-handed Camera Up = Right x Forward (uy = +cos(pitch), positive upward)
+        view.uX = -view.rZ * view.fY;
+        view.uY = view.rZ * view.fX - view.rX * view.fZ;
+        view.uZ = view.rX * view.fY;
+
+        double back = (perspective == 0) ? 0.0 : 4.0;
+        view.x = ex - view.fX * back;
+        view.y = ey - view.fY * back;
+        view.z = ez - view.fZ * back;
         view.yawDeg = yawDeg;
-        view.fX = fX;
-        view.fY = fY;
-        view.fZ = fZ;
-        view.rX = rX;
-        view.rZ = rZ;
-        view.uX = uX;
-        view.uY = uY;
-        view.uZ = uZ;
 
         double fov = Math.max(30.0, Math.min(130.0, client.options.fov));
         view.tanHalfFovY = Math.tan(Math.toRadians(fov) * 0.5);
-        view.scaledW = Math.max(1.0, (double) window.getWidth());
-        view.scaledH = Math.max(1.0, (double) window.getHeight());
         view.aspect = (double) Math.max(1, client.width) / (double) Math.max(1, client.height);
+        view.scaledH = Math.max(1.0, (double) window.getHeight());
+        view.scaledW = view.scaledH * view.aspect;
         return view;
     }
 
@@ -1130,11 +1187,13 @@ public final class LyricsRenderer {
     private static final class FloatingWord {
         String text;
         double worldX, worldY, worldZ;
-        double driftX, driftY, driftZ;
         long spawnMs;
         long durationMs;
         int colorRgb;
         float phaseSeed;
+        long wordStartMs;
+        long wordEndMs;
+        List<LyricsFetcher.LyricWord> subWords;
     }
 
     private static final class CameraView {

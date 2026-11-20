@@ -101,6 +101,27 @@ public final class FontManager {
     }
 
     /**
+     * Draws a neutral dark shadow pass behind text so additive glow drawn on top
+     * never gets punched through by dark drop-shadows.
+     */
+    public static void drawNeutralShadow(Minecraft client, String text, float x, float y, float alpha) {
+        if (text == null || text.isEmpty()) return;
+        int shadowAlpha = Math.round(Math.max(0.0f, Math.min(1.0f, alpha)) * 0.42f * 255.0f);
+        if (shadowAlpha <= 5) return;
+
+        int argb = (shadowAlpha << 24) | 0x0C1018;
+        int idx = LyricsConfig.fontIndex;
+        if (idx <= 0) {
+            if (client != null && client.textRenderer != null) {
+                client.textRenderer.draw(text, x + 0.75f, y + 0.75f, argb, false);
+            }
+            return;
+        }
+        FontAtlas atlas = getOrCreateAtlas(idx);
+        atlas.drawTextUniform(text, x + 0.65f, y + 0.65f, argb);
+    }
+
+    /**
      * Draws a string with explicit per-character ARGB colors (for gradients and animations).
      * When a custom atlas is active, renders cleanly in batched GL quads with linear filtering.
      */

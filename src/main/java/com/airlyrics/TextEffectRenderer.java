@@ -84,110 +84,122 @@ public final class TextEffectRenderer {
     }
 
     /**
-     * Builds per-character ARGB array across text applying gradient / fallback color and uniform alpha.
+     * Builds per-character ARGB array across text using pixel-consistent gradient spacing
+     * so short words do not compress an entire gradient cycle.
      */
-    public static int[] buildCharColors(String text, int fallbackRgb, float alpha, float phaseSeed, float brightenMix) {
+    public static int[] buildCharColors(Minecraft client, String text, int fallbackRgb, float alpha,
+                                        float phaseSeed, float brightenMix, boolean allowGradient) {
         int n = text == null ? 0 : text.length();
         int[] out = new int[Math.max(1, n)];
         int a = Math.max(0, Math.min(255, Math.round(alpha * 255.0f)));
+        int solidRgb = lerpRgb(fallbackRgb & 0x00FFFFFF, 0xFFFFFF, brightenMix);
         if (n == 0) {
-            out[0] = (a << 24) | (fallbackRgb & 0x00FFFFFF);
+            out[0] = (a << 24) | solidRgb;
             return out;
         }
-        float denom = Math.max(1.0f, n - 1.0f);
+        if (!allowGradient || !LyricsConfig.gradientEnabled) {
+            int argb = (a << 24) | solidRgb;
+            for (int i = 0; i < n; i++) {
+                out[i] = argb;
+            }
+            return out;
+        }
+
+        float cursorX = 0.0f;
         for (int i = 0; i < n; i++) {
-            float u = n == 1 ? 0.5f : (i / denom);
+            float cw = FontManager.getCharWidth(client, text.charAt(i));
+            float u = (cursorX + cw * 0.5f) / 68.0f;
             int rgb = resolveColorRgb(fallbackRgb, u, phaseSeed);
             if (brightenMix > 0.001f) {
                 rgb = lerpRgb(rgb, 0xFFFFFF, brightenMix);
             }
             out[i] = (a << 24) | rgb;
+            cursorX += cw;
         }
         return out;
     }
 
     /**
-     * Draws text cleanly with current FontManager style, optional soft Gaussian halo behind it,
-     * and gradient / moving gradient support. Never renders ugly pixel-offset double vision.
+     * Draws text cleanly with current FontManager style, neutral shadow behind glow,
+     * per-character Gaussian halo matched to gradient colors, and foreground glyphs.
      */
     public static void drawStyledText(Minecraft client, String text, float x, float y, float width,
                                       int fallbackRgb, float alpha, boolean shadow,
                                       float glowAmount, float phaseSeed) {
+        drawStyledText(client, text, x, y, width, fallbackRgb, alpha, shadow, glowAmount, phaseSeed, true);
+    }
+
+    public static void drawStyledText(Minecraft client, String text, float x, float y, float width,
+                                      int fallbackRgb, float alpha, boolean shadow,
+                                      float glowAmount, float phaseSeed, boolean allowGradient) {
         if (text == null || text.isEmpty()) return;
         int baseA = Math.round(alpha * 255.0f);
         if (baseA <= 6) return;
 
-        if (glowAmount > 0.01f && LyricsConfig.glowEnabled) {
-            int centerRgb = resolveColorRgb(fallbackRgb, 0.5f, phaseSeed);
-            int startRgb = resolveColorRgb(fallbackRgb, 0.0f, phaseSeed);
-            int endRgb = resolveColorRgb(fallbackRgb, 1.0f, phaseSeed);
-            drawSoftGlowCapsule(x, y, width, FontManager.LOGICAL_HEIGHT, startRgb, centerRgb, endRgb,
-                    alpha * glowAmount * 0.58f, glowAmount);
+        int[] cols = buildCharColors(client, text, fallbackRgb, alpha, phaseSeed, 0.0f, allowGradient);
+
+        if (shadow) {
+            FontManager.drawNeutralShadow(client, text, x, y, alpha);
         }
 
-        if (LyricsConfig.gradientEnabled) {
-            int[] cols = buildCharColors(text, fallbackRgb, alpha, phaseSeed, 0.0f);
-            FontManager.drawPerCharColored(client, text, x, y, cols, shadow);
+        if (glowAmount > 0.01f && LyricsConfig.glowEnabled) {
+            float spread = Math.max(0.75f, Math.min(1.75f, 0.85f + 0.30f * glowAmount));
+            float glowAlpha = alpha * Math.min(1.0f, glowAmount * 0.62f);
+            drawPerCharGlow(client, text, x, y, cols, -1.0f, glowAlpha, spread);
+        }
+
+        if (allowGradient && LyricsConfig.gradientEnabled) {
+            FontManager.drawPerCharColored(client, text, x, y, cols, false);
         } else {
             int argb = (baseA << 24) | (fallbackRgb & 0x00FFFFFF);
-            FontManager.drawSolid(client, text, x, y, argb, shadow);
+            FontManager.drawSolid(client, text, x, y, argb, false);
         }
     }
 
     /**
-     * Draws progressively swept text (used in Apple Style and Sky lyrics) with dimmed base layer
-     * topped by a bright sub-glyph progressive fill and soft emissive bloom.
+     * Draws progressively swept text (Apple Style / Sky / World) keeping unsung text neutral,
+     * drawing neutral shadow behind per-character gradient glow, and sweeping sub-glyph wipe on top.
      */
     public static void drawWipedStyledText(Minecraft client, String text, float x, float y, float width,
                                            int baseRgb, float baseAlpha, int sungRgb, float sungAlpha,
                                            float progress01, boolean shadow, float glowAmount, float phaseSeed) {
         if (text == null || text.isEmpty()) return;
         float clampedProg = Math.max(0.0f, Math.min(1.0f, progress01));
+        float clipW = width * clampedProg;
 
-        if (glowAmount > 0.01f && LyricsConfig.glowEnabled && sungAlpha > 0.03f) {
-            int sRgb = resolveColorRgb(sungRgb, 0.15f, phaseSeed);
-            int cRgb = resolveColorRgb(sungRgb, 0.5f, phaseSeed);
-            int eRgb = resolveColorRgb(sungRgb, 0.85f, phaseSeed);
-            float haloW = Math.max(8.0f, width * Math.max(0.25f, clampedProg));
-            drawSoftGlowCapsule(x, y, haloW, FontManager.LOGICAL_HEIGHT, sRgb, cRgb, eRgb,
-                    sungAlpha * glowAmount * 0.50f, glowAmount);
+        int[] baseCols = buildCharColors(client, text, baseRgb, baseAlpha, phaseSeed, 0.0f, false);
+        int[] sungCols = buildCharColors(client, text, sungRgb, sungAlpha, phaseSeed, 0.10f, true);
+
+        if (shadow) {
+            FontManager.drawNeutralShadow(client, text, x, y, Math.max(baseAlpha, sungAlpha));
+        }
+
+        if (glowAmount > 0.01f && LyricsConfig.glowEnabled && sungAlpha > 0.03f && clampedProg > 0.005f) {
+            float spread = Math.max(0.75f, Math.min(1.75f, 0.85f + 0.30f * glowAmount));
+            float glowAlpha = sungAlpha * Math.min(1.0f, glowAmount * 0.62f);
+            drawPerCharGlow(client, text, x, y, sungCols, clipW, glowAlpha, spread);
         }
 
         if (baseAlpha > 0.03f && clampedProg < 0.995f) {
-            int[] baseCols = LyricsConfig.gradientEnabled
-                    ? buildCharColors(text, baseRgb, baseAlpha, phaseSeed, 0.0f)
-                    : fillArray(text.length(), (Math.round(baseAlpha * 255.0f) << 24) | (baseRgb & 0x00FFFFFF));
-            FontManager.drawPerCharColored(client, text, x, y, baseCols, shadow);
+            FontManager.drawPerCharColored(client, text, x, y, baseCols, false);
         }
 
         if (sungAlpha > 0.03f && clampedProg > 0.005f) {
-            int[] sungCols = LyricsConfig.gradientEnabled
-                    ? buildCharColors(text, sungRgb, sungAlpha, phaseSeed, 0.12f)
-                    : fillArray(text.length(), (Math.round(sungAlpha * 255.0f) << 24) | (sungRgb & 0x00FFFFFF));
             if (clampedProg >= 0.995f) {
-                FontManager.drawPerCharColored(client, text, x, y, sungCols, shadow);
+                FontManager.drawPerCharColored(client, text, x, y, sungCols, false);
             } else {
-                float clipW = width * clampedProg;
                 FontManager.drawClippedPerChar(client, text, x, y, sungCols, clipW, 4.5f);
             }
         }
     }
 
-    private static int[] fillArray(int len, int val) {
-        int[] arr = new int[Math.max(1, len)];
-        for (int i = 0; i < arr.length; i++) {
-            arr[i] = val;
-        }
-        return arr;
-    }
-
     /**
-     * Renders a genuinely smooth Gaussian pill halo behind a word/line (zero jagged bitmap shadows).
+     * Emits soft Gaussian halos individually per visible character matching exact per-glyph colors,
+     * skipping spaces and preventing dark shadows from cutting into the glow.
      */
-    public static void drawSoftGlowCapsule(float x, float y, float w, float h,
-                                           int startRgb, int midRgb, int endRgb,
-                                           float alpha, float spreadMul) {
-        if (alpha <= 0.02f || w <= 0.5f) return;
+    public static void drawPerCharGlow(Minecraft client, String text, float x, float y,
+                                       int[] charColors, float maxRelX, float glowAlpha, float glowSpread) {
+        if (glowAlpha <= 0.02f || text == null || text.isEmpty()) return;
         ensureGlowTexture();
 
         int prevTex = ShaderCompat.getBoundTexture2D();
@@ -196,64 +208,62 @@ public final class TextEffectRenderer {
         GlStateManager.bindTexture(glowTexId);
         ShaderCompat.setAdditiveGlowMode(true);
 
-        float spread = Math.max(0.75f, Math.min(2.0f, 0.85f + 0.35f * spreadMul));
-        float padX = 7.5f * spread;
-        float padY = 5.5f * spread;
-
-        // Pass 1: wide smooth ambient aura; Pass 2: warmer inner core for depth
-        emitCapsulePass(x, y, w, h, padX * 1.45f, padY * 1.45f, startRgb, midRgb, endRgb, alpha * 0.45f);
-        emitCapsulePass(x, y, w, h, padX * 0.82f, padY * 0.85f, startRgb, midRgb, endRgb, alpha * 0.62f);
-
-        ShaderCompat.setAdditiveGlowMode(false);
-        ShaderCompat.restoreBoundTexture2D(prevTex);
-    }
-
-    private static void emitCapsulePass(float x, float y, float w, float h,
-                                        float padX, float padY,
-                                        int rgb0, int rgb1, int rgb2, float alpha) {
-        int a = Math.max(0, Math.min(255, Math.round(alpha * 255.0f)));
-        if (a <= 4) return;
-
-        float x0 = x - padX;
-        float xL = x;
-        float xR = x + w;
-        float x3 = x + w + padX;
-        float y0 = y - padY;
-        float y1 = y + h + padY;
-
-        int r0 = (rgb0 >> 16) & 0xFF, g0 = (rgb0 >> 8) & 0xFF, b0 = rgb0 & 0xFF;
-        int r1 = (rgb1 >> 16) & 0xFF, g1 = (rgb1 >> 8) & 0xFF, b1 = rgb1 & 0xFF;
-        int r2 = (rgb2 >> 16) & 0xFF, g2 = (rgb2 >> 8) & 0xFF, b2 = rgb2 & 0xFF;
+        float outerPadX = 4.2f * glowSpread;
+        float outerPadY = 3.8f * glowSpread;
+        float innerPadX = 2.2f * glowSpread;
+        float innerPadY = 2.2f * glowSpread;
 
         Tesselator tess = Tesselator.getInstance();
         BufferBuilder buf = tess.getBuffer();
         buf.begin(GL11.GL_QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
 
-        // Left radial cap (u: 0.0 -> 0.5)
-        buf.vertex(x0, y1, 0.0).texture(0.0, 1.0).color(r0, g0, b0, a).nextVertex();
-        buf.vertex(xL, y1, 0.0).texture(0.5, 1.0).color(r0, g0, b0, a).nextVertex();
-        buf.vertex(xL, y0, 0.0).texture(0.5, 0.0).color(r0, g0, b0, a).nextVertex();
-        buf.vertex(x0, y0, 0.0).texture(0.0, 0.0).color(r0, g0, b0, a).nextVertex();
+        float cx = 0.0f;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            float cw = FontManager.getCharWidth(client, c);
+            if (Character.isWhitespace(c)) {
+                cx += cw;
+                continue;
+            }
+            float weight = 1.0f;
+            if (maxRelX >= 0.0f) {
+                if (cx >= maxRelX) {
+                    break;
+                }
+                weight = Math.max(0.0f, Math.min(1.0f, (maxRelX - cx) / Math.max(1.0f, cw)));
+            }
 
-        // Center stretched Gaussian band (u: 0.5 -> 0.5, leftHalf & rightHalf blend through midRgb)
-        float midX = (xL + xR) * 0.5f;
-        buf.vertex(xL, y1, 0.0).texture(0.5, 1.0).color(r0, g0, b0, a).nextVertex();
-        buf.vertex(midX, y1, 0.0).texture(0.5, 1.0).color(r1, g1, b1, a).nextVertex();
-        buf.vertex(midX, y0, 0.0).texture(0.5, 0.0).color(r1, g1, b1, a).nextVertex();
-        buf.vertex(xL, y0, 0.0).texture(0.5, 0.0).color(r0, g0, b0, a).nextVertex();
+            int col = charColors[Math.min(i, charColors.length - 1)];
+            int rgb = lerpRgb(col & 0x00FFFFFF, 0xFFFFFF, 0.14f);
+            int r = (rgb >> 16) & 0xFF;
+            int g = (rgb >> 8) & 0xFF;
+            int b = rgb & 0xFF;
 
-        buf.vertex(midX, y1, 0.0).texture(0.5, 1.0).color(r1, g1, b1, a).nextVertex();
-        buf.vertex(xR, y1, 0.0).texture(0.5, 1.0).color(r2, g2, b2, a).nextVertex();
-        buf.vertex(xR, y0, 0.0).texture(0.5, 0.0).color(r2, g2, b2, a).nextVertex();
-        buf.vertex(midX, y0, 0.0).texture(0.5, 0.0).color(r1, g1, b1, a).nextVertex();
+            int aOuter = Math.max(0, Math.min(255, Math.round(glowAlpha * 0.34f * weight * 255.0f)));
+            int aInner = Math.max(0, Math.min(255, Math.round(glowAlpha * 0.48f * weight * 255.0f)));
 
-        // Right radial cap (u: 0.5 -> 1.0)
-        buf.vertex(xR, y1, 0.0).texture(0.5, 1.0).color(r2, g2, b2, a).nextVertex();
-        buf.vertex(x3, y1, 0.0).texture(1.0, 1.0).color(r2, g2, b2, a).nextVertex();
-        buf.vertex(x3, y0, 0.0).texture(1.0, 0.0).color(r2, g2, b2, a).nextVertex();
-        buf.vertex(xR, y0, 0.0).texture(0.5, 0.0).color(r2, g2, b2, a).nextVertex();
+            if (aOuter > 4) {
+                emitTexQuad(buf, x + cx - outerPadX, y - outerPadY,
+                        x + cx + cw + outerPadX, y + FontManager.LOGICAL_HEIGHT + outerPadY, r, g, b, aOuter);
+            }
+            if (aInner > 4) {
+                emitTexQuad(buf, x + cx - innerPadX, y - innerPadY,
+                        x + cx + cw + innerPadX, y + FontManager.LOGICAL_HEIGHT + innerPadY, r, g, b, aInner);
+            }
+            cx += cw;
+        }
 
         tess.end();
+        ShaderCompat.setAdditiveGlowMode(false);
+        ShaderCompat.restoreBoundTexture2D(prevTex);
+    }
+
+    private static void emitTexQuad(BufferBuilder buf, float x0, float y0, float x1, float y1,
+                                    int r, int g, int b, int a) {
+        buf.vertex(x0, y1, 0.0).texture(0.0, 1.0).color(r, g, b, a).nextVertex();
+        buf.vertex(x1, y1, 0.0).texture(1.0, 1.0).color(r, g, b, a).nextVertex();
+        buf.vertex(x1, y0, 0.0).texture(1.0, 0.0).color(r, g, b, a).nextVertex();
+        buf.vertex(x0, y0, 0.0).texture(0.0, 0.0).color(r, g, b, a).nextVertex();
     }
 
     /**

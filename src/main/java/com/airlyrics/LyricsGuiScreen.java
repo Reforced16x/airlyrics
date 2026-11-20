@@ -127,19 +127,19 @@ public class LyricsGuiScreen extends Screen {
                     "Grad Speed: " + Math.round(LyricsConfig.gradientSpeedPercent) + "%"));
 
             this.buttons.add(new ButtonWidget(27, leftCol, rowY + step * 4, 152, 20,
-                    "Emit Light: " + onOff(LyricsConfig.lyricsEmitLight)));
-            this.buttons.add(new ButtonWidget(28, rightCol, rowY + step * 4, 152, 20,
-                    "Light Level: " + LyricsConfig.emitLightLevel));
+                    "World Apple: " + onOff(LyricsConfig.worldAppleStyle)));
+            this.buttons.add(new ButtonWidget(31, rightCol, rowY + step * 4, 152, 20,
+                    "Word Est.: " + onOff(LyricsConfig.estimateWordTimings)));
 
             this.buttons.add(new ButtonWidget(29, leftCol, rowY + step * 5, 152, 20,
                     "Pastel World: " + onOff(LyricsConfig.rainbowPastel)));
             this.buttons.add(new ButtonWidget(30, rightCol, rowY + step * 5, 152, 20,
                     String.format("Accent: #%06X", LyricsConfig.primaryColor)));
 
-            this.buttons.add(new ButtonWidget(31, leftCol, rowY + step * 6, 152, 20,
-                    "Word Est.: " + onOff(LyricsConfig.estimateWordTimings)));
-            this.buttons.add(new ButtonWidget(32, rightCol, rowY + step * 6, 152, 20,
+            this.buttons.add(new ButtonWidget(32, leftCol, rowY + step * 6, 152, 20,
                     "Reset HUD Pos"));
+            this.buttons.add(new ButtonWidget(15, rightCol, rowY + step * 6, 152, 20,
+                    "Reset Defaults"));
         }
 
         this.buttons.add(new ButtonWidget(100, cx - 100, rowY + step * 7 + 4, 200, 20, "Done"));
@@ -230,14 +230,7 @@ public class LyricsGuiScreen extends Screen {
                 if (LyricsConfig.gradientSpeedPercent > 260.0f) LyricsConfig.gradientSpeedPercent = 60.0f;
                 break;
             case 27:
-                LyricsConfig.lyricsEmitLight = !LyricsConfig.lyricsEmitLight;
-                if (!LyricsConfig.lyricsEmitLight) {
-                    DynamicLightManager.clear(this.minecraft);
-                }
-                break;
-            case 28:
-                LyricsConfig.emitLightLevel += 2;
-                if (LyricsConfig.emitLightLevel > 15) LyricsConfig.emitLightLevel = 6;
+                LyricsConfig.worldAppleStyle = !LyricsConfig.worldAppleStyle;
                 break;
             case 29:
                 LyricsConfig.rainbowPastel = !LyricsConfig.rainbowPastel;

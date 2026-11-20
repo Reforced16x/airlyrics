@@ -84,6 +84,14 @@ public final class AirLyricsOneConfig extends Config {
     public boolean appleStyle = LyricsConfig.appleStyle;
 
     @Switch(
+        title = "World Apple Lyrics Effect",
+        description = "Apply Apple Lyrics progressive wipe, spring swell, and lift to floating in-world lyrics.",
+        category = "Display",
+        subcategory = "General"
+    )
+    public boolean worldAppleStyle = LyricsConfig.worldAppleStyle;
+
+    @Switch(
         title = "Word-by-Word Popups",
         description = "Spawn individual word popups instead of whole lines in world.",
         category = "Display",
@@ -219,25 +227,6 @@ public final class AirLyricsOneConfig extends Config {
     )
     public PolyColor primaryColor = new PolyColor(0xFF000000 | (LyricsConfig.primaryColor & 0x00FFFFFF));
 
-    @Switch(
-        title = "Lyrics Emit Light",
-        description = "Project dynamic block lighting into nearby terrain & entities (shader compatible).",
-        category = "Effects & Sync",
-        subcategory = "Dynamic Lighting"
-    )
-    public boolean lyricsEmitLight = LyricsConfig.lyricsEmitLight;
-
-    @Slider(
-        title = "Emitted Light Level",
-        description = "Maximum block light level (4 - 15) emitted by active lyrics.",
-        category = "Effects & Sync",
-        subcategory = "Dynamic Lighting",
-        min = 4.0f,
-        max = 15.0f,
-        step = 1.0f
-    )
-    public float emitLightLevel = LyricsConfig.emitLightLevel;
-
     @Slider(
         title = "Sync Offset (ms)",
         description = "Manual audio/lyrics timing adjustment in milliseconds.",
@@ -301,12 +290,11 @@ public final class AirLyricsOneConfig extends Config {
     private void registerListeners() {
         String[] watched = {
             "enabled", "inWorld", "skyLyrics", "skyScalePercent", "skyElevationDeg",
-            "onScreen", "appleStyle", "showWords", "scatterLayout",
+            "onScreen", "appleStyle", "worldAppleStyle", "showWords", "scatterLayout",
             "scalePercent", "opacityPercent", "fontIndex", "uppercase",
             "glowEnabled", "glowIntensityPercent", "gradientEnabled", "movingGradient",
             "gradientColorStart", "gradientColorEnd", "gradientSpeedPercent",
-            "rainbowPastel", "primaryColor", "lyricsEmitLight", "emitLightLevel",
-            "syncOffsetMs", "estimateWordTimings"
+            "rainbowPastel", "primaryColor", "syncOffsetMs", "estimateWordTimings"
         };
         for (int i = 0; i < watched.length; i++) {
             try {
@@ -338,6 +326,7 @@ public final class AirLyricsOneConfig extends Config {
             LyricsConfig.skyElevationDeg = skyElevationDeg;
             LyricsConfig.onScreen = onScreen;
             LyricsConfig.appleStyle = appleStyle;
+            LyricsConfig.worldAppleStyle = worldAppleStyle;
             LyricsConfig.showWords = showWords;
             LyricsConfig.scatterLayout = scatterLayout;
             LyricsConfig.scalePercent = scalePercent;
@@ -359,8 +348,6 @@ public final class AirLyricsOneConfig extends Config {
             if (primaryColor != null) {
                 LyricsConfig.primaryColor = primaryColor.getRawArgb() & 0x00FFFFFF;
             }
-            LyricsConfig.lyricsEmitLight = lyricsEmitLight;
-            LyricsConfig.emitLightLevel = Math.round(emitLightLevel);
             LyricsConfig.syncOffsetMs = Math.round(syncOffsetMs);
             LyricsConfig.estimateWordTimings = estimateWordTimings;
 
@@ -386,6 +373,7 @@ public final class AirLyricsOneConfig extends Config {
             skyElevationDeg = LyricsConfig.skyElevationDeg;
             onScreen = LyricsConfig.onScreen;
             appleStyle = LyricsConfig.appleStyle;
+            worldAppleStyle = LyricsConfig.worldAppleStyle;
             showWords = LyricsConfig.showWords;
             scatterLayout = LyricsConfig.scatterLayout;
             scalePercent = LyricsConfig.scalePercent;
@@ -401,8 +389,6 @@ public final class AirLyricsOneConfig extends Config {
             gradientSpeedPercent = LyricsConfig.gradientSpeedPercent;
             rainbowPastel = LyricsConfig.rainbowPastel;
             primaryColor = new PolyColor(0xFF000000 | (LyricsConfig.primaryColor & 0x00FFFFFF));
-            lyricsEmitLight = LyricsConfig.lyricsEmitLight;
-            emitLightLevel = LyricsConfig.emitLightLevel;
             syncOffsetMs = LyricsConfig.syncOffsetMs;
             estimateWordTimings = LyricsConfig.estimateWordTimings;
             save();

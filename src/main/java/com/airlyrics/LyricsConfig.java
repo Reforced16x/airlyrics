@@ -22,6 +22,7 @@ public class LyricsConfig {
     public static boolean skyLyrics = false;
     public static boolean onScreen = true;
     public static boolean appleStyle = true;
+    public static boolean worldAppleStyle = true;
 
     public static int syncOffsetMs = 0;
     public static boolean showWords = true;
@@ -42,9 +43,6 @@ public class LyricsConfig {
     public static int gradientColorStart = 0x66F3FF;
     public static int gradientColorEnd = 0xFF7BE5;
     public static float gradientSpeedPercent = 100.0f;
-
-    public static boolean lyricsEmitLight = false;
-    public static int emitLightLevel = 12;
 
     public static boolean estimateWordTimings = true;
     public static boolean rainbowPastel = true;
@@ -73,7 +71,6 @@ public class LyricsConfig {
         opacityPercent = Math.max(10.0f, Math.min(100.0f, opacityPercent));
         glowIntensityPercent = Math.max(25.0f, Math.min(200.0f, glowIntensityPercent));
         gradientSpeedPercent = Math.max(20.0f, Math.min(300.0f, gradientSpeedPercent));
-        emitLightLevel = Math.max(4, Math.min(15, emitLightLevel));
         gradientColorStart &= 0x00FFFFFF;
         gradientColorEnd &= 0x00FFFFFF;
         primaryColor &= 0x00FFFFFF;
@@ -139,6 +136,7 @@ public class LyricsConfig {
         d.skyLyrics = skyLyrics;
         d.onScreen = onScreen;
         d.appleStyle = appleStyle;
+        d.worldAppleStyle = worldAppleStyle;
         d.syncOffsetMs = syncOffsetMs;
         d.showWords = showWords;
         d.scatterLayout = scatterLayout;
@@ -155,8 +153,6 @@ public class LyricsConfig {
         d.gradientColorStart = gradientColorStart;
         d.gradientColorEnd = gradientColorEnd;
         d.gradientSpeedPercent = gradientSpeedPercent;
-        d.lyricsEmitLight = lyricsEmitLight;
-        d.emitLightLevel = emitLightLevel;
         d.estimateWordTimings = estimateWordTimings;
         d.rainbowPastel = rainbowPastel;
         d.primaryColor = primaryColor;
@@ -171,6 +167,7 @@ public class LyricsConfig {
         skyLyrics = d.skyLyrics;
         onScreen = d.onScreen;
         appleStyle = d.appleStyle;
+        worldAppleStyle = d.worldAppleStyle;
         syncOffsetMs = d.syncOffsetMs;
         showWords = d.showWords;
         scatterLayout = d.scatterLayout;
@@ -187,8 +184,6 @@ public class LyricsConfig {
         gradientColorStart = d.gradientColorStart;
         gradientColorEnd = d.gradientColorEnd;
         gradientSpeedPercent = d.gradientSpeedPercent;
-        lyricsEmitLight = d.lyricsEmitLight;
-        emitLightLevel = d.emitLightLevel;
         estimateWordTimings = d.estimateWordTimings;
         rainbowPastel = d.rainbowPastel;
         primaryColor = d.primaryColor;
@@ -203,6 +198,7 @@ public class LyricsConfig {
         boolean skyLyrics = false;
         boolean onScreen = true;
         boolean appleStyle = true;
+        boolean worldAppleStyle = true;
         int syncOffsetMs = 0;
         boolean showWords = true;
         boolean scatterLayout = true;
@@ -219,8 +215,6 @@ public class LyricsConfig {
         int gradientColorStart = 0x66F3FF;
         int gradientColorEnd = 0xFF7BE5;
         float gradientSpeedPercent = 100.0f;
-        boolean lyricsEmitLight = false;
-        int emitLightLevel = 12;
         boolean estimateWordTimings = true;
         boolean rainbowPastel = true;
         int primaryColor = 0x55FFFF;
