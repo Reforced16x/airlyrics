@@ -36,11 +36,22 @@ repositories {
         name = 'Polyfrost Snapshots'
         url = 'https://repo.polyfrost.org/snapshots'
     }
+    maven {
+        name = 'JetBrains Compose'
+        url = 'https://maven.pkg.jetbrains.space/public/p/compose/dev'
+    }
+    google()
     mavenCentral()
 }
 
 ploceus {
     setGeneration(2)
+}
+
+configurations.named("compileClasspath") {
+    attributes {
+        attribute(org.gradle.api.attributes.java.TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21)
+    }
 }
 
 dependencies {
@@ -98,12 +109,16 @@ tasks.named("remapJar") {
                     }
                 }
                 def targetJar = new File(modsDir, outJar.name)
-                java.nio.file.Files.copy(
-                        outJar.toPath(),
-                        targetJar.toPath(),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
-                )
-                logger.lifecycle("Copied ${outJar.name} to ${modsDir}")
+                try {
+                    java.nio.file.Files.copy(
+                            outJar.toPath(),
+                            targetJar.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
+                    logger.lifecycle("Copied ${outJar.name} to ${modsDir}")
+                } catch (java.io.IOException e) {
+                    logger.warn("Could not overwrite ${targetJar} (Minecraft/OneClient may be running): ${e.message}")
+                }
             }
         }
     }
