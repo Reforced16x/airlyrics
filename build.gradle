@@ -84,3 +84,27 @@ jar {
         rename { "${it}_${project.base.archivesName.get()}" }
     }
 }
+
+tasks.named("remapJar") {
+    doLast {
+        def appData = System.getenv("APPDATA")
+        if (appData) {
+            def modsDir = new File(appData, "Polyfrost/OneClient/clusters/1.8.9 Fabric/mods")
+            if (modsDir.isDirectory()) {
+                def outJar = archiveFile.get().asFile
+                modsDir.listFiles()?.each { File f ->
+                    if (f.name.startsWith("airlyrics-") && f.name.endsWith(".jar") && f.name != outJar.name) {
+                        f.delete()
+                    }
+                }
+                def targetJar = new File(modsDir, outJar.name)
+                java.nio.file.Files.copy(
+                        outJar.toPath(),
+                        targetJar.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+                logger.lifecycle("Copied ${outJar.name} to ${modsDir}")
+            }
+        }
+    }
+}
