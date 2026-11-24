@@ -1,5 +1,8 @@
 # AirLyrics
 
+[![Downloads](https://img.shields.io/github/downloads/Reforced16x/airlyrics/total?style=for-the-badge)](https://github.com/Reforced16x/airlyrics/releases)
+[![Latest Downloads](https://img.shields.io/github/downloads/Reforced16x/airlyrics/latest/total?style=for-the-badge)](https://github.com/Reforced16x/airlyrics/releases/latest)
+
 A client-side Minecraft 1.8.9 mod (Ornithe / OneClient) that renders real-time synced lyrics floating in the 3D world and on a karaoke HUD overlay, pulled directly from your active desktop media session without needing any API keys.
 
 ## Features
