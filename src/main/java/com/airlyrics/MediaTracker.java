@@ -13,7 +13,9 @@ import com.sun.jna.ptr.PointerByReference;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -240,8 +242,12 @@ public class MediaTracker {
         private final CombaseLibrary combase;
         private Com manager;
         private Com bufferFactory;
-        private String lastThumbKey = "";
-        private byte[] lastThumbBytes = null;
+        private final Map<String, byte[]> thumbCache = new LinkedHashMap<String, byte[]>(8, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+                return size() > 4;
+            }
+        };
 
         WinRtMedia() {
             this.combase = (CombaseLibrary) Native.loadLibrary("combase", CombaseLibrary.class);
@@ -294,9 +300,13 @@ public class MediaTracker {
                 }
 
                 MediaSnapshot bestPlayingPreferred = null;
+                int bestPlayingPreferredIdx = -1;
                 MediaSnapshot bestPlaying = null;
+                int bestPlayingIdx = -1;
                 MediaSnapshot bestPausedPreferred = null;
+                int bestPausedPreferredIdx = -1;
                 MediaSnapshot bestPaused = null;
+                int bestPausedIdx = -1;
                 long nowMs = System.currentTimeMillis();
 
                 for (int i = 0; i < count; i++) {
@@ -313,29 +323,89 @@ public class MediaTracker {
                         if (snap.playing) {
                             if (matchesPreferred && bestPlayingPreferred == null) {
                                 bestPlayingPreferred = snap;
+                                bestPlayingPreferredIdx = i;
                             } else if (bestPlaying == null) {
                                 bestPlaying = snap;
+                                bestPlayingIdx = i;
                             }
                         } else {
                             if (matchesPreferred && bestPausedPreferred == null) {
                                 bestPausedPreferred = snap;
+                                bestPausedPreferredIdx = i;
                             } else if (bestPaused == null) {
                                 bestPaused = snap;
+                                bestPausedIdx = i;
                             }
                         }
                     }
                 }
 
+                MediaSnapshot chosen;
+                int chosenIdx;
                 if (bestPlayingPreferred != null) {
-                    return bestPlayingPreferred;
+                    chosen = bestPlayingPreferred;
+                    chosenIdx = bestPlayingPreferredIdx;
+                } else if (bestPlaying != null) {
+                    chosen = bestPlaying;
+                    chosenIdx = bestPlayingIdx;
+                } else if (bestPausedPreferred != null) {
+                    chosen = bestPausedPreferred;
+                    chosenIdx = bestPausedPreferredIdx;
+                } else {
+                    chosen = bestPaused;
+                    chosenIdx = bestPausedIdx;
                 }
-                if (bestPlaying != null) {
-                    return bestPlaying;
+
+                if (chosen == null) {
+                    return null;
                 }
-                if (bestPausedPreferred != null) {
-                    return bestPausedPreferred;
+
+                String tKey = chosen.artist + "\u0000" + chosen.title;
+                byte[] thumbBytes = thumbCache.get(tKey);
+                if (thumbBytes == null && chosenIdx >= 0) {
+                    try (Com winSession = list.childAt(6, chosenIdx);
+                         Com op = winSession != null ? winSession.child(7) : null;
+                         Com props = op != null ? op.awaitAsync(IID_ASYNC_INFO, 1200L) : null) {
+                        if (props != null) {
+                            byte[] fetched = readThumbnailBytes(props);
+                            if (fetched != null) {
+                                thumbCache.put(tKey, fetched);
+                                thumbBytes = fetched;
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
                 }
-                return bestPaused;
+
+                long posMs = chosen.positionMs;
+                if (chosen.rawPosTicks >= 0L) {
+                    if (chosen.rawPosTicks != lastSeenRawPosTicks || chosen.lastUpdatedFiletime != lastSeenFiletime) {
+                        lastSeenRawPosTicks = chosen.rawPosTicks;
+                        lastSeenFiletime = chosen.lastUpdatedFiletime;
+                        syntheticAnchorMs = chosen.sampleTimeMs;
+                    }
+                    if (chosen.playing) {
+                        long updatedUnixMs = chosen.lastUpdatedFiletime > 0L
+                                ? (chosen.lastUpdatedFiletime / 10000L - FILETIME_UNIX_EPOCH_MS)
+                                : 0L;
+                        long ageMs = chosen.sampleTimeMs - updatedUnixMs;
+                        if (updatedUnixMs > 1577836800000L && ageMs >= -250L && ageMs < 600000L) {
+                            posMs += Math.max(0L, ageMs);
+                        } else if (syntheticAnchorMs > 0L) {
+                            long localElapsed = chosen.sampleTimeMs - syntheticAnchorMs;
+                            if (localElapsed > 0L && localElapsed < 15000L) {
+                                posMs += localElapsed;
+                            }
+                        }
+                    }
+                    if (chosen.durationMs > 0L && posMs > chosen.durationMs) {
+                        posMs = chosen.durationMs;
+                    }
+                }
+
+                return new MediaSnapshot(chosen.title, chosen.artist, chosen.album, posMs, chosen.durationMs,
+                        chosen.playing, chosen.player, chosen.backend, chosen.sampleTimeMs, thumbBytes,
+                        chosen.rawPosTicks, chosen.lastUpdatedFiletime);
             }
         }
 
@@ -357,21 +427,12 @@ public class MediaTracker {
             String title = "";
             String artist = "";
             String album = "";
-            byte[] thumbBytes = null;
             try (Com op = session.child(7);
                  Com props = op != null ? op.awaitAsync(IID_ASYNC_INFO, 1200L) : null) {
                 if (props != null) {
                     title = safeTrim(props.getString(6));
                     artist = safeTrim(props.getString(9));
                     album = safeTrim(props.getString(10));
-                    if (!title.isEmpty()) {
-                        String tKey = artist + "\u0000" + title;
-                        if (!tKey.equals(lastThumbKey)) {
-                            lastThumbKey = tKey;
-                            lastThumbBytes = readThumbnailBytes(props);
-                        }
-                        thumbBytes = lastThumbBytes;
-                    }
                 }
             } catch (Throwable ignored) {
             }
@@ -382,46 +443,30 @@ public class MediaTracker {
 
             long posMs = 0L;
             long durationMs = 0L;
+            long rawPosTicks = -1L;
+            long lastUpdatedFiletime = -1L;
             long sampleNowMs = System.currentTimeMillis();
             try (Com timeline = session.child(8)) {
                 if (timeline != null) {
                     long startTicks = timeline.getLong(6);
                     long endTicks = timeline.getLong(7);
                     long posTicks = timeline.getLong(10);
-                    long lastUpdatedFiletime = timeline.getLong(11);
+                    long updatedFiletime = timeline.getLong(11);
                     sampleNowMs = System.currentTimeMillis();
 
                     durationMs = Math.max(0L, (endTicks - startTicks) / 10000L);
                     posMs = Math.max(0L, (posTicks - startTicks) / 10000L);
-
-                    if (posTicks != lastSeenRawPosTicks || lastUpdatedFiletime != lastSeenFiletime) {
-                        lastSeenRawPosTicks = posTicks;
-                        lastSeenFiletime = lastUpdatedFiletime;
-                        syntheticAnchorMs = sampleNowMs;
-                    }
-
-                    if (playing) {
-                        long updatedUnixMs = lastUpdatedFiletime > 0L
-                                ? (lastUpdatedFiletime / 10000L - FILETIME_UNIX_EPOCH_MS)
-                                : 0L;
-                        long ageMs = sampleNowMs - updatedUnixMs;
-                        if (updatedUnixMs > 1577836800000L && ageMs >= -250L && ageMs < 600000L) {
-                            posMs += Math.max(0L, ageMs);
-                        } else if (syntheticAnchorMs > 0L) {
-                            long localElapsed = sampleNowMs - syntheticAnchorMs;
-                            if (localElapsed > 0L && localElapsed < 15000L) {
-                                posMs += localElapsed;
-                            }
-                        }
-                    }
                     if (durationMs > 0L && posMs > durationMs) {
                         posMs = durationMs;
                     }
+                    rawPosTicks = posTicks;
+                    lastUpdatedFiletime = updatedFiletime;
                 }
             } catch (Throwable ignored) {
             }
 
-            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player, "WinRT-COM", sampleNowMs, thumbBytes);
+            return new MediaSnapshot(title, artist, album, posMs, durationMs, playing, player,
+                    "WinRT-COM", sampleNowMs, null, rawPosTicks, lastUpdatedFiletime);
         }
 
         private byte[] readThumbnailBytes(Com props) {
@@ -717,7 +762,10 @@ public class MediaTracker {
                     out.append(line).append('\n');
                 }
             }
-            process.waitFor(2500L, TimeUnit.MILLISECONDS);
+            if (!process.waitFor(2500L, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
             String result = out.toString().trim();
             if (result.isEmpty()) {
                 return MediaSnapshot.EMPTY;
@@ -774,7 +822,11 @@ public class MediaTracker {
             String fmt = "{{status}}\t{{title}}\t{{artist}}\t{{album}}\t{{position}}\t{{mpris:length}}\t{{playerName}}";
             Process process = new ProcessBuilder("playerctl", "metadata", "--format", fmt).start();
             String output = readAll(process);
-            int code = process.waitFor();
+            if (!process.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
+            int code = process.exitValue();
             if (code != 0 || output.trim().isEmpty()) {
                 return null;
             }
@@ -804,7 +856,11 @@ public class MediaTracker {
                     "--type=method_call", "--print-reply", "/org/freedesktop/DBus",
                     "org.freedesktop.DBus.ListNames").start();
             String busOut = readAll(busProc);
-            if (busProc.waitFor() != 0) {
+            if (!busProc.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                busProc.destroyForcibly();
+                return null;
+            }
+            if (busProc.exitValue() != 0) {
                 return null;
             }
 
@@ -832,7 +888,11 @@ public class MediaTracker {
                     "--object-path", "/org/mpris/MediaPlayer2", "--method", "org.freedesktop.DBus.Properties.GetAll",
                     "org.mpris.MediaPlayer2.Player").start();
             String metaOut = readAll(pMeta);
-            if (pMeta.waitFor() != 0) {
+            if (!pMeta.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                pMeta.destroyForcibly();
+                return null;
+            }
+            if (pMeta.exitValue() != 0) {
                 return null;
             }
 
@@ -894,7 +954,7 @@ public class MediaTracker {
     }
 
     private static final class MediaSnapshot {
-        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None", 0L, null);
+        static final MediaSnapshot EMPTY = new MediaSnapshot("", "", "", 0L, 0L, false, "", "None", 0L, null, -1L, -1L);
 
         final String title;
         final String artist;
@@ -906,14 +966,17 @@ public class MediaTracker {
         final String backend;
         final long sampleTimeMs;
         final byte[] thumbnailBytes;
+        final long rawPosTicks;
+        final long lastUpdatedFiletime;
 
         MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
                       boolean playing, String player, String backend) {
-            this(title, artist, album, positionMs, durationMs, playing, player, backend, System.currentTimeMillis(), null);
+            this(title, artist, album, positionMs, durationMs, playing, player, backend, System.currentTimeMillis(), null, -1L, -1L);
         }
 
         MediaSnapshot(String title, String artist, String album, long positionMs, long durationMs,
-                      boolean playing, String player, String backend, long sampleTimeMs, byte[] thumbnailBytes) {
+                      boolean playing, String player, String backend, long sampleTimeMs, byte[] thumbnailBytes,
+                      long rawPosTicks, long lastUpdatedFiletime) {
             this.title = title;
             this.artist = artist;
             this.album = album;
@@ -924,6 +987,8 @@ public class MediaTracker {
             this.backend = backend;
             this.sampleTimeMs = sampleTimeMs;
             this.thumbnailBytes = thumbnailBytes;
+            this.rawPosTicks = rawPosTicks;
+            this.lastUpdatedFiletime = lastUpdatedFiletime;
         }
     }
 }

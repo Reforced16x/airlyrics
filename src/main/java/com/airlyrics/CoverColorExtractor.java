@@ -213,7 +213,10 @@ public final class CoverColorExtractor {
                     }
                 }
             }
-            process.waitFor(3000L, TimeUnit.MILLISECONDS);
+            if (!process.waitFor(3000L, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
             String b64 = out.toString();
             if (b64.length() > 32) {
                 return Base64.getDecoder().decode(b64);
@@ -228,7 +231,9 @@ public final class CoverColorExtractor {
         try {
             Process p = new ProcessBuilder("playerctl", "metadata", "mpris:artUrl").start();
             String text = readProcessText(p);
-            if (p.waitFor(1500L, TimeUnit.MILLISECONDS) && p.exitValue() == 0 && !text.isEmpty()) {
+            if (!p.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                p.destroyForcibly();
+            } else if (p.exitValue() == 0 && !text.isEmpty()) {
                 artUrl = text.trim();
             }
         } catch (Throwable ignored) {
@@ -240,6 +245,10 @@ public final class CoverColorExtractor {
                         "--type=method_call", "--print-reply", "/org/freedesktop/DBus",
                         "org.freedesktop.DBus.ListNames").start();
                 String names = readProcessText(p);
+                if (!p.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                    p.destroyForcibly();
+                    names = "";
+                }
                 Matcher m = Pattern.compile("\"(org\\.mpris\\.MediaPlayer2\\.[^\"]+)\"").matcher(names);
                 if (m.find()) {
                     String dest = m.group(1);
@@ -247,6 +256,10 @@ public final class CoverColorExtractor {
                             "--object-path", "/org/mpris/MediaPlayer2", "--method",
                             "org.freedesktop.DBus.Properties.Get", "org.mpris.MediaPlayer2.Player", "Metadata").start();
                     String meta = readProcessText(g);
+                    if (!g.waitFor(1500L, TimeUnit.MILLISECONDS)) {
+                        g.destroyForcibly();
+                        meta = "";
+                    }
                     Matcher um = Pattern.compile("'mpris:artUrl':\\s*<'([^']+)'>").matcher(meta);
                     if (um.find()) {
                         artUrl = um.group(1).trim();

@@ -1,6 +1,7 @@
 package com.airlyrics.oneconfig;
 
 import com.airlyrics.LyricsConfig;
+import com.airlyrics.LyricsFetcher;
 import org.polyfrost.compose.render.PolyColor;
 import org.polyfrost.oneconfig.api.config.v1.Config;
 import org.polyfrost.oneconfig.api.config.v1.annotations.Button;
@@ -276,6 +277,7 @@ public final class AirLyricsOneConfig extends Config {
     )
     public void resetAllAction() {
         LyricsConfig.reset();
+        LyricsConfig.saveQuiet();
         syncFromCore();
     }
 
@@ -326,6 +328,7 @@ public final class AirLyricsOneConfig extends Config {
             return;
         }
         syncing = true;
+        boolean prevEst = LyricsConfig.estimateWordTimings;
         try {
             LyricsConfig.enabled = enabled;
             LyricsConfig.inWorld = inWorld;
@@ -361,8 +364,11 @@ public final class AirLyricsOneConfig extends Config {
             LyricsConfig.estimateWordTimings = estimateWordTimings;
 
             LyricsConfig.clampAll();
-            LyricsConfig.save();
+            LyricsConfig.saveQuiet();
             save();
+            if (prevEst != LyricsConfig.estimateWordTimings) {
+                LyricsFetcher.reapplyWordTimings();
+            }
         } finally {
             syncing = false;
         }

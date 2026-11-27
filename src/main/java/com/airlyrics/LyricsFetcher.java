@@ -175,6 +175,39 @@ public class LyricsFetcher {
         hasWordSync = false;
     }
 
+    public static void reapplyWordTimings() {
+        if (!isSynced) {
+            return;
+        }
+        List<LyricLine> existing = currentLyrics;
+        if (existing == null || existing.isEmpty()) {
+            return;
+        }
+        List<LyricLine> rebuilt = new ArrayList<LyricLine>(existing.size());
+        for (LyricLine line : existing) {
+            List<LyricWord> wordsCopy = new ArrayList<LyricWord>();
+            if (line.hasWordTimings && line.words != null) {
+                for (LyricWord w : line.words) {
+                    wordsCopy.add(new LyricWord(w.timeMs, w.endTimeMs, w.text));
+                }
+            }
+            LyricLine clone = new LyricLine(line.startTimeMs, line.endTimeMs, line.fullLine, wordsCopy);
+            clone.hasWordTimings = line.hasWordTimings;
+            clone.estimatedWords = false;
+            rebuilt.add(clone);
+        }
+        estimateMissingWordTimings(rebuilt);
+        boolean anyWordSync = false;
+        for (LyricLine line : rebuilt) {
+            if (line.hasWordTimings) {
+                anyWordSync = true;
+                break;
+            }
+        }
+        hasWordSync = anyWordSync;
+        currentLyrics = Collections.unmodifiableList(rebuilt);
+    }
+
     public static int getActiveLineIndex(long timeMs) {
         List<LyricLine> lines = currentLyrics;
         if (lines == null || lines.isEmpty()) {
@@ -952,8 +985,8 @@ public class LyricsFetcher {
                     continue;
                 }
                 JsonObject song = el.getAsJsonObject();
-                long id = song.has("id") ? song.get("id").getAsLong() : -1L;
-                long dur = song.has("duration") ? song.get("duration").getAsLong() : 0L;
+                long id = (song.has("id") && !song.get("id").isJsonNull()) ? song.get("id").getAsLong() : -1L;
+                long dur = (song.has("duration") && !song.get("duration").isJsonNull()) ? song.get("duration").getAsLong() : 0L;
                 if (id <= 0L) {
                     continue;
                 }
@@ -1410,25 +1443,27 @@ public class LyricsFetcher {
 
     private static String httpGet(String urlStr, int timeoutMs) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        conn.setConnectTimeout(timeoutMs);
-        conn.setReadTimeout(timeoutMs);
-        conn.setRequestProperty("User-Agent", "AirLyrics/1.1.0 (Minecraft 1.8.9)");
-        conn.setRequestProperty("Accept", "application/json, text/plain, */*");
-        int code = conn.getResponseCode();
-        if (code < 200 || code >= 300) {
-            return null;
-        }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (InputStream in = conn.getInputStream()) {
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
+        try {
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setRequestProperty("User-Agent", "AirLyrics/1.1.0 (Minecraft 1.8.9)");
+            conn.setRequestProperty("Accept", "application/json, text/plain, */*");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                return null;
             }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+            }
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
         } finally {
             conn.disconnect();
         }
-        return new String(out.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private static String encode(String s) {
@@ -1440,7 +1475,7 @@ public class LyricsFetcher {
     }
 
     private static String getString(JsonObject obj, String key) {
-        if (obj == null || !obj.has(key) || obj.get(key).isJsonNull()) {
+        if (obj == null || !obj.has(key) || obj.get(key).isJsonNull() || !obj.get(key).isJsonPrimitive()) {
             return "";
         }
         return obj.get(key).getAsString().trim();

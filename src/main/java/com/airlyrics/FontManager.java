@@ -408,9 +408,13 @@ public final class FontManager {
             int prevTex = ShaderCompat.getBoundTexture2D();
             GLX.activeTexture(GLX.GL_TEXTURE0);
             GlStateManager.bindTexture(page.texId);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, 0);
+            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
+            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
             GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
             GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, ax, ay, padW, padH,
                     GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, uploadBuf);
+            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
             ShaderCompat.restoreBoundTexture2D(prevTex);
 
             float u0 = ax / (float) ATLAS_SIZE;
@@ -441,6 +445,11 @@ public final class FontManager {
         void drawTextPerChar(String text, float x, float y, int[] colors,
                              float maxRelX, float featherPx, float globalAlphaMul) {
             if (text == null || text.isEmpty()) return;
+
+            // Pre-bake all missing glyphs before opening any Tesselator batch
+            for (int i = 0; i < text.length(); i++) {
+                getOrBakeGlyph(text.charAt(i));
+            }
 
             int prevTex = ShaderCompat.getBoundTexture2D();
             GLX.activeTexture(GLX.GL_TEXTURE0);

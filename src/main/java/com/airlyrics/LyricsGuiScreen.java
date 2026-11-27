@@ -246,6 +246,7 @@ public class LyricsGuiScreen extends Screen {
                 break;
             case 31:
                 LyricsConfig.estimateWordTimings = !LyricsConfig.estimateWordTimings;
+                LyricsFetcher.reapplyWordTimings();
                 break;
             case 32:
                 LyricsConfig.hudX = -1.0f;
@@ -253,7 +254,6 @@ public class LyricsGuiScreen extends Screen {
                 break;
             case 100:
                 LyricsConfig.save();
-                OneConfigCompat.syncFromCore();
                 this.minecraft.openScreen(parent);
                 return;
             default:
@@ -261,23 +261,24 @@ public class LyricsGuiScreen extends Screen {
         }
 
         LyricsConfig.save();
-        OneConfigCompat.syncFromCore();
         init();
     }
 
     @Override
     public void render(int mouseX, int mouseY, float tickDelta) {
         this.renderBackground();
-        int top = Math.max(12, (this.height - 216) / 2 - 14);
+        int initTop = Math.max(28, (this.height - 216) / 2);
+        int top = Math.max(12, initTop - 14);
         drawCenteredString(this.textRenderer, "AirLyrics Settings", this.width / 2, top, 0x55FFFF);
         String trackLine = MediaTracker.hasMedia
                 ? (MediaTracker.currentArtist + " - " + MediaTracker.currentTitle)
-                : "No active Windows media detected";
+                : "No active media detected";
         String offsetInfo = String.format("Sync Offset: %+dms  |  Font: %s",
                 LyricsConfig.syncOffsetMs, LyricsConfig.getFontOptionName());
         drawCenteredString(this.textRenderer, trackLine, this.width / 2, top + 12, 0xCCCCCC);
         super.render(mouseX, mouseY, tickDelta);
-        drawCenteredString(this.textRenderer, offsetInfo, this.width / 2, Math.min(this.height - 14, top + 218), 0xAAAAAA);
+        int infoY = Math.min(this.height - 10, initTop + 206);
+        drawCenteredString(this.textRenderer, offsetInfo, this.width / 2, infoY, 0xAAAAAA);
     }
 
     @Override

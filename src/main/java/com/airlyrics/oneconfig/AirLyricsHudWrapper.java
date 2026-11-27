@@ -131,7 +131,7 @@ public final class AirLyricsHudWrapper implements OneConfigHudWrapper {
     public void setHidden(boolean hidden) {
         LyricsConfig.onScreen = !hidden;
         config.onScreen = !hidden;
-        LyricsConfig.save();
+        LyricsConfig.saveQuiet();
         config.save();
     }
 

@@ -34,6 +34,7 @@ public final class LyricsRenderer {
     private static final List<FloatingWord> ACTIVE_WORLD_WORDS = new ArrayList<FloatingWord>();
 
     private static boolean clockInitialized = false;
+    private static volatile boolean clearRequested = false;
     private static double smoothPosMs = 0.0;
     private static long lastFrameSysMs = 0L;
     private static String lastTrackKey = "";
@@ -59,6 +60,17 @@ public final class LyricsRenderer {
     }
 
     public static void clearActiveWords() {
+        clearRequested = true;
+    }
+
+    private static void flushPendingClear() {
+        if (clearRequested) {
+            clearActiveWordsNow();
+        }
+    }
+
+    private static void clearActiveWordsNow() {
+        clearRequested = false;
         ACTIVE_WORLD_WORDS.clear();
         lastSpawnLineIdx = -1;
         lastSpawnWordIdx = -1;
@@ -70,8 +82,9 @@ public final class LyricsRenderer {
      * Client tick handler (50ms) handles pause fade state and cleanup when disabled or out of world.
      */
     public static void tick(Minecraft client) {
+        flushPendingClear();
         if (client == null || client.world == null || client.player == null || !LyricsConfig.enabled) {
-            clearActiveWords();
+            clearActiveWordsNow();
             clockInitialized = false;
             skyYawInitialized = false;
             return;
@@ -95,6 +108,7 @@ public final class LyricsRenderer {
         if (ShaderCompat.isShadowPass()) {
             return;
         }
+        flushPendingClear();
         Minecraft client = Minecraft.getInstance();
         if (client == null || client.world == null || client.player == null) {
             return;
@@ -120,7 +134,7 @@ public final class LyricsRenderer {
         ShaderCompat.SavedRenderState savedState = ShaderCompat.beginLuminousTextPass();
         try {
             if (LyricsConfig.enabled && LyricsConfig.inWorld && !client.isPaused()) {
-                renderWorldWords(client, cam, nowSys);
+                renderProjectedWords(client, window, tickDelta);
             }
 
             if (LyricsConfig.enabled && LyricsConfig.skyLyrics && !client.isPaused()) {
@@ -135,6 +149,20 @@ public final class LyricsRenderer {
         }
     }
 
+    private static void renderProjectedWords(Minecraft client, Window window, float tickDelta) {
+        flushPendingClear();
+        if (client == null || client.world == null || client.player == null
+                || !LyricsConfig.enabled || !LyricsConfig.inWorld || client.isPaused()) {
+            return;
+        }
+        long nowSys = System.currentTimeMillis();
+        float frameDtMs = computeFrameDtMs(nowSys);
+        updateClock(client, nowSys, frameDtMs);
+        CameraView cam = computeCamera(client, window, tickDelta);
+        updateWorldSpawns(client, cam, nowSys);
+        renderWorldWords(client, cam, nowSys);
+    }
+
     private static float computeFrameDtMs(long nowSys) {
         if (lastFrameSysMs == 0L) {
             lastFrameSysMs = nowSys;
@@ -142,7 +170,7 @@ public final class LyricsRenderer {
         }
         long dt = nowSys - lastFrameSysMs;
         lastFrameSysMs = nowSys;
-        if (dt <= 0L) return 1.0f;
+        if (dt <= 0L) return 0.0f;
         if (dt > 100L) return 100.0f;
         return (float) dt;
     }
@@ -166,7 +194,7 @@ public final class LyricsRenderer {
             lastLyricsRef = lines;
             smoothPosMs = rawPosMs;
             clockInitialized = true;
-            clearActiveWords();
+            clearActiveWordsNow();
             return;
         }
 
@@ -174,7 +202,7 @@ public final class LyricsRenderer {
             double err = rawPosMs - smoothPosMs;
             if (Math.abs(err) > SNAP_DISTANCE_MS) {
                 smoothPosMs = rawPosMs;
-                clearActiveWords();
+                clearActiveWordsNow();
             }
             return;
         }
@@ -189,7 +217,7 @@ public final class LyricsRenderer {
             boolean jumpedBack = err < -SNAP_DISTANCE_MS;
             smoothPosMs = rawPosMs;
             if (jumpedBack) {
-                clearActiveWords();
+                clearActiveWordsNow();
             } else {
                 resyncSpawnCursor();
             }
@@ -203,8 +231,21 @@ public final class LyricsRenderer {
         long nowPos = Math.round(smoothPosMs);
         int idx = LyricsFetcher.getActiveLineIndex(nowPos);
         if (idx >= 0) {
-            lastSpawnLineIdx = idx - 1;
+            lastSpawnLineIdx = idx;
             lastSpawnWordIdx = -1;
+            List<LyricsFetcher.LyricLine> lines = LyricsFetcher.currentLyrics;
+            if (lines != null && idx < lines.size()) {
+                LyricsFetcher.LyricLine line = lines.get(idx);
+                if (line.words != null) {
+                    for (int i = 0; i < line.words.size(); i++) {
+                        if (line.words.get(i).timeMs <= nowPos) {
+                            lastSpawnWordIdx = i;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -856,7 +897,7 @@ public final class LyricsRenderer {
         float unscaledH = 26.0f;
 
         float defaultX = 16.0f;
-        float defaultY = Math.max(16.0f, window.getHeight() - 56.0f);
+        float defaultY = Math.max(16.0f, window.getHeight() - unscaledH * userScale - 18.0f);
         OneConfigCompat.notifyHudBounds(defaultX, defaultY, unscaledW, unscaledH);
 
         float baseX = LyricsConfig.hudX >= 0.0f ? LyricsConfig.hudX : defaultX;
